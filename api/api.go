@@ -272,5 +272,19 @@ func App(opts ...options.AppOption) (*fiber.App, error) {
 
 	app.Get("/metrics", metrics.MetricsHandler())
 
+	if options.AllowShutdown {
+		app.Get("/shutdown", auth, func(c *fiber.Ctx) error {
+			err := c.App().Shutdown()
+
+			if err != nil {
+				_ = c.SendStatus(500)
+			} else {
+				err = c.SendStatus(200)
+			}
+
+			return err
+		})
+	}
+
 	return app, nil
 }

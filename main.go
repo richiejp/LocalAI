@@ -185,6 +185,12 @@ func main() {
 				EnvVars: []string{"PRELOAD_BACKEND_ONLY"},
 				Value:   false,
 			},
+			&cli.BoolFlag{
+				Name:    "allow-shutdown",
+				Usage:   "Enable the /shutdown endpoint which stops the API accepting new requests, but leaves backends running",
+				EnvVars: []string{"ALLOW_SHUTDOWN"},
+				Value:   false,
+			},
 		},
 		Description: `
 LocalAI is a drop-in replacement OpenAI API which runs inference locally.
@@ -222,6 +228,7 @@ For a list of compatible model, check out: https://localai.io/model-compatibilit
 				options.WithBackendAssetsOutput(ctx.String("backend-assets-path")),
 				options.WithUploadLimitMB(ctx.Int("upload-limit")),
 				options.WithApiKeys(ctx.StringSlice("api-keys")),
+				options.WithAllowShutdown(ctx.Bool("allow-shutdown")),
 			}
 
 			idleWatchDog := ctx.Bool("enable-watchdog-idle")
