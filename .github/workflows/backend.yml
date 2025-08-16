@@ -218,7 +218,7 @@ jobs:
             runs-on: 'ubuntu-latest'
             base-image: "ubuntu:22.04"
             skip-drivers: 'false'
-            backend: "diffusers"            
+            backend: "diffusers"
             dockerfile: "./backend/Dockerfile.python"
             context: "./backend"
           # CUDA 12 additional backends
