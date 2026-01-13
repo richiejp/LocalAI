@@ -49,8 +49,8 @@ type Session struct {
 	TranscriptionOnly       bool
 	Model                   string
 	Voice                   string
-	TurnDetection           *types.ServerTurnDetection `json:"turn_detection"` // "server_vad" or "none"
-	InputAudioTranscription *types.InputAudioTranscription
+	TurnDetection           *types.TurnDetectionUnion // "server_vad", "semantic_vad" or "none"
+	InputAudioTranscription *types.AudioTranscription
 	Functions               functions.Functions
 	Conversations           map[string]*Conversation
 	InputAudioBuffer        []byte
@@ -58,48 +58,50 @@ type Session struct {
 	Instructions            string
 	DefaultConversationID   string
 	ModelInterface          Model
+	ModelConfig             *config.ModelConfig
 }
 
-func (s *Session) FromClient(session *types.ClientSession) {
+func (s *Session) FromClient(session *types.SessionUnion) {
 }
 
-func (s *Session) ToServer() types.ServerSession {
-	return types.ServerSession{
-		ID: s.ID,
-		Object: func() string {
-			if s.TranscriptionOnly {
-				return "realtime.transcription_session"
-			} else {
-				return "realtime.session"
-			}
-		}(),
-		Model:                   s.Model,
-		Modalities:              []types.Modality{types.ModalityText, types.ModalityAudio},
-		Instructions:            s.Instructions,
-		Voice:                   s.Voice,
-		InputAudioFormat:        types.AudioFormatPcm16,
-		OutputAudioFormat:       types.AudioFormatPcm16,
-		TurnDetection:           s.TurnDetection,
-		InputAudioTranscription: s.InputAudioTranscription,
-		Tools:                   []types.Tool{},
-		// TODO: ToolChoice
-		// TODO: Temperature
-		// TODO: MaxOutputTokens
-		// TODO: InputAudioNoiseReduction
+func (s *Session) ToServer() types.SessionUnion {
+	if s.TranscriptionOnly {
+		return types.SessionUnion{
+			Transcription: &types.TranscriptionSession{
+				ID:     s.ID,
+				Object: "realtime.transcription_session",
+				Audio: &types.TranscriptionSessionAudio{
+					Input: &types.SessionAudioInput{
+						Transcription: s.InputAudioTranscription,
+					},
+				},
+			},
+		}
+	} else {
+		return types.SessionUnion{
+			Realtime: &types.RealtimeSession{
+				ID:           s.ID,
+				Object:       "realtime.session",
+				Model:        s.Model,
+				Instructions: s.Instructions,
+				Audio: &types.RealtimeSessionAudio{
+					Input: &types.SessionAudioInput{
+						TurnDetection: s.TurnDetection,
+						Transcription: s.InputAudioTranscription,
+					},
+					Output: &types.SessionAudioOutput{
+						Voice: types.Voice(s.Voice),
+					},
+				},
+			},
+		}
 	}
-}
-
-// TODO: Update to tools?
-// FunctionCall represents a function call initiated by the model
-type FunctionCall struct {
-	Name      string                 `json:"name"`
-	Arguments map[string]interface{} `json:"arguments"`
 }
 
 // Conversation represents a conversation with a list of items
 type Conversation struct {
 	ID    string
-	Items []*types.MessageItem
+	Items []*types.MessageItemUnion
 	Lock  sync.Mutex
 }
 
@@ -108,48 +110,6 @@ func (c *Conversation) ToServer() types.Conversation {
 		ID:     c.ID,
 		Object: "realtime.conversation",
 	}
-}
-
-// Item represents a message, function_call, or function_call_output
-type Item struct {
-	ID           string                `json:"id"`
-	Object       string                `json:"object"`
-	Type         string                `json:"type"` // "message", "function_call", "function_call_output"
-	Status       string                `json:"status"`
-	Role         string                `json:"role"`
-	Content      []ConversationContent `json:"content,omitempty"`
-	FunctionCall *FunctionCall         `json:"function_call,omitempty"`
-}
-
-// ConversationContent represents the content of an item
-type ConversationContent struct {
-	Type  string `json:"type"` // "input_text", "input_audio", "text", "audio", etc.
-	Audio string `json:"audio,omitempty"`
-	Text  string `json:"text,omitempty"`
-	// Additional fields as needed
-}
-
-// TODO: We could replace this with the Union pattern or UnmarshalServerEvent like trick used in openai-relatime-api
-// Define the structures for incoming messages/events of any type
-type IncomingMessage struct {
-	Type     types.ClientEventType `json:"type"`
-	EventID  string                `json:"event_id,omitempty"`
-	Session  json.RawMessage       `json:"session,omitempty"`
-	Item     json.RawMessage       `json:"item,omitempty"`
-	ItemID   string                `json:"item_id,omitempty"`
-	Audio    string                `json:"audio,omitempty"`
-	Response json.RawMessage       `json:"response,omitempty"`
-	Error    *ErrorMessage         `json:"error,omitempty"`
-	// Other fields as needed
-}
-
-// ErrorMessage represents an error message sent to the client
-type ErrorMessage struct {
-	Type    string `json:"type"`
-	Code    string `json:"code"`
-	Message string `json:"message"`
-	Param   string `json:"param,omitempty"`
-	EventID string `json:"event_id,omitempty"`
 }
 
 // Map to store sessions (in-memory)
@@ -196,42 +156,33 @@ func Realtime(application *application.Application) echo.HandlerFunc {
 		if model == "" {
 			model = defaultVLMModel
 		}
-		intent := c.QueryParam("intent")
 
-		registerRealtime(application, model, intent)(ws)
+		registerRealtime(application, model)(ws)
 		return nil
 	}
 }
 
-func registerRealtime(application *application.Application, model, intent string) func(c *websocket.Conn) {
+func registerRealtime(application *application.Application, model string) func(c *websocket.Conn) {
 	return func(c *websocket.Conn) {
 
 		evaluator := application.TemplatesEvaluator()
-		xlog.Debug("WebSocket connection established", "address", c.RemoteAddr().String())
-		if intent != "transcription" {
-			sendNotImplemented(c, "Only transcription mode is supported which requires the intent=transcription parameter")
-		}
-
-		xlog.Debug("Realtime params", "model", model, "intent", intent)
+		xlog.Debug("Realtime WebSocket connection established", "address", c.RemoteAddr().String(), "model", model)
 
 		sessionID := generateSessionID()
 		session := &Session{
 			ID:                sessionID,
-			TranscriptionOnly: true,
+			TranscriptionOnly: false,
 			Model:             model,
 			Voice:             defaultTTSModel,
-			TurnDetection: &types.ServerTurnDetection{
-				Type: types.ServerTurnDetectionTypeServerVad,
-				TurnDetectionParams: types.TurnDetectionParams{
-					// TODO: Need some way to pass this to the backend
-					Threshold: 0.5,
-					// TODO: This is ignored and the amount of padding is random at present
-					PrefixPaddingMs:   30,
+			TurnDetection: &types.TurnDetectionUnion{
+				ServerVad: &types.ServerVad{
+					Threshold:         0.5,
+					PrefixPaddingMs:   300,
 					SilenceDurationMs: 500,
-					CreateResponse:    func() *bool { t := true; return &t }(),
+					CreateResponse:    true,
 				},
 			},
-			InputAudioTranscription: &types.InputAudioTranscription{
+			InputAudioTranscription: &types.AudioTranscription{
 				Model: defaultSTTModel,
 			},
 			Conversations: make(map[string]*Conversation),
@@ -243,19 +194,19 @@ func registerRealtime(application *application.Application, model, intent string
 			ID: conversationID,
 			// TODO: We need to truncate the conversation items when a new item is added and we have run out of space. There are multiple places where items
 			//       can be added so we could use a datastructure here that enforces truncation upon addition
-			Items: []*types.MessageItem{},
+			Items: []*types.MessageItemUnion{},
 		}
 		session.Conversations[conversationID] = conversation
 		session.DefaultConversationID = conversationID
 
-		// TODO: The API has no way to configure the VAD model or other models that make up a pipeline to fake any-to-any
-		//       So possibly we could have a way to configure a composite model that can be used in situations where any-to-any is expected
 		pipeline := config.Pipeline{
 			VAD:           defaultVADModel,
 			Transcription: session.InputAudioTranscription.Model,
+			LLM:           session.Model,
+			TTS:           session.Voice,
 		}
 
-		m, cfg, err := newTranscriptionOnlyModel(
+		m, err := newModel(
 			&pipeline,
 			application.ModelConfigLoader(),
 			application.ModelLoader(),
@@ -268,15 +219,20 @@ func registerRealtime(application *application.Application, model, intent string
 		}
 		session.ModelInterface = m
 
+		if wm, ok := m.(*wrappedModel); ok {
+			session.ModelConfig = wm.LLMConfig
+		} else if a2a, ok := m.(*anyToAnyModel); ok {
+			session.ModelConfig = a2a.LLMConfig
+		}
+
 		// Store the session
 		sessionLock.Lock()
 		sessions[sessionID] = session
 		sessionLock.Unlock()
 
-		sendEvent(c, types.TranscriptionSessionCreatedEvent{
+		sendEvent(c, types.SessionCreatedEvent{
 			ServerEventBase: types.ServerEventBase{
 				EventID: "event_TODO",
-				Type:    types.ServerEventTypeSessionCreated,
 			},
 			Session: session.ToServer(),
 		})
@@ -289,16 +245,16 @@ func registerRealtime(application *application.Application, model, intent string
 
 		vadServerStarted := false
 		toggleVAD := func() {
-			if session.TurnDetection.Type == types.ServerTurnDetectionTypeServerVad && !vadServerStarted {
+			if session.TurnDetection.ServerVad != nil && !vadServerStarted {
 				xlog.Debug("Starting VAD goroutine...")
 				wg.Add(1)
 				go func() {
 					defer wg.Done()
 					conversation := session.Conversations[session.DefaultConversationID]
-					handleVAD(cfg, evaluator, session, conversation, c, done)
+					handleVAD(evaluator, session, conversation, c, done)
 				}()
 				vadServerStarted = true
-			} else if session.TurnDetection.Type != types.ServerTurnDetectionTypeServerVad && vadServerStarted {
+			} else if session.TurnDetection.ServerVad == nil && vadServerStarted {
 				xlog.Debug("Stopping VAD goroutine...")
 
 				go func() {
@@ -317,86 +273,75 @@ func registerRealtime(application *application.Application, model, intent string
 			}
 
 			// Parse the incoming message
-			var incomingMsg IncomingMessage
-			if err := json.Unmarshal(msg, &incomingMsg); err != nil {
+			event, err := types.UnmarshalClientEvent(msg)
+			if err != nil {
 				xlog.Error("invalid json", "error", err)
 				sendError(c, "invalid_json", "Invalid JSON format", "", "")
 				continue
 			}
 
-			var sessionUpdate types.ClientSession
-			switch incomingMsg.Type {
-			case types.ClientEventTypeTranscriptionSessionUpdate:
+			switch e := event.(type) {
+			case types.SessionUpdateEvent:
 				xlog.Debug("recv", "message", string(msg))
 
-				if err := json.Unmarshal(incomingMsg.Session, &sessionUpdate); err != nil {
-					xlog.Error("failed to unmarshal 'transcription_session.update'", "error", err)
-					sendError(c, "invalid_session_update", "Invalid session update format", "", "")
-					continue
-				}
-				if err := updateTransSession(
-					session,
-					&sessionUpdate,
-					application.ModelConfigLoader(),
-					application.ModelLoader(),
-					application.ApplicationConfig(),
-				); err != nil {
-					xlog.Error("failed to update session", "error", err)
-					sendError(c, "session_update_error", "Failed to update session", "", "")
-					continue
-				}
+				// Handle transcription session update
+				if e.Session.Transcription != nil {
+					if err := updateTransSession(
+						session,
+						&e.Session,
+						application.ModelConfigLoader(),
+						application.ModelLoader(),
+						application.ApplicationConfig(),
+					); err != nil {
+						xlog.Error("failed to update session", "error", err)
+						sendError(c, "session_update_error", "Failed to update session", "", "")
+						continue
+					}
 
-				toggleVAD()
+					toggleVAD()
 
-				sendEvent(c, types.SessionUpdatedEvent{
-					ServerEventBase: types.ServerEventBase{
-						EventID: "event_TODO",
-						Type:    types.ServerEventTypeTranscriptionSessionUpdated,
-					},
-					Session: session.ToServer(),
-				})
-
-			case types.ClientEventTypeSessionUpdate:
-				xlog.Debug("recv", "message", string(msg))
-
-				// Update session configurations
-				if err := json.Unmarshal(incomingMsg.Session, &sessionUpdate); err != nil {
-					xlog.Error("failed to unmarshal 'session.update'", "error", err)
-					sendError(c, "invalid_session_update", "Invalid session update format", "", "")
-					continue
-				}
-				if err := updateSession(
-					session,
-					&sessionUpdate,
-					application.ModelConfigLoader(),
-					application.ModelLoader(),
-					application.ApplicationConfig(),
-				); err != nil {
-					xlog.Error("failed to update session", "error", err)
-					sendError(c, "session_update_error", "Failed to update session", "", "")
-					continue
+					sendEvent(c, types.SessionUpdatedEvent{
+						ServerEventBase: types.ServerEventBase{
+							EventID: "event_TODO",
+						},
+						Session: session.ToServer(),
+					})
 				}
 
-				toggleVAD()
+				// Handle realtime session update
+				if e.Session.Realtime != nil {
+					if err := updateSession(
+						session,
+						&e.Session,
+						application.ModelConfigLoader(),
+						application.ModelLoader(),
+						application.ApplicationConfig(),
+					); err != nil {
+						xlog.Error("failed to update session", "error", err)
+						sendError(c, "session_update_error", "Failed to update session", "", "")
+						continue
+					}
 
-				sendEvent(c, types.SessionUpdatedEvent{
-					ServerEventBase: types.ServerEventBase{
-						EventID: "event_TODO",
-						Type:    types.ServerEventTypeSessionUpdated,
-					},
-					Session: session.ToServer(),
-				})
+					toggleVAD()
 
-			case types.ClientEventTypeInputAudioBufferAppend:
+					sendEvent(c, types.SessionUpdatedEvent{
+						ServerEventBase: types.ServerEventBase{
+							EventID: "event_TODO",
+						},
+						Session: session.ToServer(),
+					})
+				}
+
+			case types.InputAudioBufferAppendEvent:
 				// Handle 'input_audio_buffer.append'
-				if incomingMsg.Audio == "" {
+				if e.Audio == "" {
 					xlog.Error("Audio data is missing in 'input_audio_buffer.append'")
 					sendError(c, "missing_audio_data", "Audio data is missing", "", "")
 					continue
 				}
 
 				// Decode base64 audio data
-				decodedAudio, err := base64.StdEncoding.DecodeString(incomingMsg.Audio)
+				decodedAudio, err := base64.StdEncoding.DecodeString(e.Audio)
 				if err != nil {
 					xlog.Error("failed to decode audio data", "error", err)
 					sendError(c, "invalid_audio_data", "Failed to decode audio data", "", "")
@@ -408,15 +353,15 @@ func registerRealtime(application *application.Application, model, intent string
 				session.InputAudioBuffer = append(session.InputAudioBuffer, decodedAudio...)
 				session.AudioBufferLock.Unlock()
 
-			case types.ClientEventTypeInputAudioBufferCommit:
+			case types.InputAudioBufferCommitEvent:
 				xlog.Debug("recv", "message", string(msg))
 
 				sessionLock.Lock()
-				td := session.TurnDetection.Type
+				isServerVAD := session.TurnDetection.ServerVad != nil
 				sessionLock.Unlock()
 
 				// TODO: At the least need to check locking and timer state in the VAD Go routine before allowing this
-				if td == types.ServerTurnDetectionTypeServerVad {
+				if isServerVAD {
 					sendNotImplemented(c, "input_audio_buffer.commit in conjunction with VAD")
 					continue
 				}
@@ -427,27 +372,41 @@ func registerRealtime(application *application.Application, model, intent string
 				session.InputAudioBuffer = nil
 				session.AudioBufferLock.Unlock()
 
-				go commitUtterance(context.TODO(), allAudio, cfg, evaluator, session, conversation, c)
+				go commitUtterance(context.TODO(), allAudio, evaluator, session, conversation, c)
 
-			case types.ClientEventTypeConversationItemCreate:
+			case types.ConversationItemCreateEvent:
 				xlog.Debug("recv", "message", string(msg))
 				sendNotImplemented(c, "conversation.item.create")
 
-			case types.ClientEventTypeConversationItemDelete:
+			case types.ConversationItemDeleteEvent:
 				sendError(c, "not_implemented", "Deleting items not implemented", "", "event_TODO")
 
-			case types.ClientEventTypeConversationItemRetrieve:
+			case types.ConversationItemRetrieveEvent:
 				xlog.Debug("recv", "message", string(msg))
 
-				if incomingMsg.ItemID == "" {
+				if e.ItemID == "" {
 					sendError(c, "invalid_item_id", "Need item_id, but none specified", "", "event_TODO")
 					continue
 				}
 
 				conversation.Lock.Lock()
-				var retrievedItem types.MessageItem
+				var retrievedItem types.MessageItemUnion
 				for _, item := range conversation.Items {
-					if item.ID == incomingMsg.ItemID {
+					// We need to check ID in the union
+					var id string
+					if item.System != nil {
+						id = item.System.ID
+					} else if item.User != nil {
+						id = item.User.ID
+					} else if item.Assistant != nil {
+						id = item.Assistant.ID
+					} else if item.FunctionCall != nil {
+						id = item.FunctionCall.ID
+					} else if item.FunctionCallOutput != nil {
+						id = item.FunctionCallOutput.ID
+					}
+
+					if id == e.ItemID {
 						retrievedItem = *item
 						break
 					}
@@ -456,17 +415,16 @@ func registerRealtime(application *application.Application, model, intent string
 
 				sendEvent(c, types.ConversationItemRetrievedEvent{
 					ServerEventBase: types.ServerEventBase{
-						Type:    types.ServerEventTypeConversationItemRetrieved,
 						EventID: "event_TODO",
 					},
 					Item: retrievedItem,
 				})
 
-			case types.ClientEventTypeResponseCreate:
+			case types.ResponseCreateEvent:
 				xlog.Debug("recv", "message", string(msg))
 				sendNotImplemented(c, "response.create")
 
-			case types.ClientEventTypeResponseCancel:
+			case types.ResponseCancelEvent:
 				xlog.Debug("recv", "message", string(msg))
 
 				// Handle cancellation of ongoing responses
@@ -474,8 +432,8 @@ func registerRealtime(application *application.Application, model, intent string
 				sendNotImplemented(c, "response.cancel")
 
 			default:
-				xlog.Error("unknown message type", "type", incomingMsg.Type)
-				sendError(c, "unknown_message_type", fmt.Sprintf("Unknown message type: %s", incomingMsg.Type), "", "")
+				xlog.Error("unknown message type")
+				// sendError(c, "unknown_message_type", fmt.Sprintf("Unknown message type: %s", incomingMsg.Type), "", "")
 			}
 		}
 
@@ -506,13 +464,13 @@ func sendEvent(c *websocket.Conn, event types.ServerEvent) {
 func sendError(c *websocket.Conn, code, message, param, eventID string) {
 	errorEvent := types.ErrorEvent{
 		ServerEventBase: types.ServerEventBase{
-			Type:    types.ServerEventTypeError,
 			EventID: eventID,
 		},
 		Error: types.Error{
 			Type:    "invalid_request_error",
 			Code:    code,
 			Message: message,
+			Param:   param,
 			EventID: eventID,
 		},
 	}
@@ -524,11 +482,16 @@ func sendNotImplemented(c *websocket.Conn, message string) {
 	sendError(c, "not_implemented", message, "", "event_TODO")
 }
 
-func updateTransSession(session *Session, update *types.ClientSession, cl *config.ModelConfigLoader, ml *model.ModelLoader, appConfig *config.ApplicationConfig) error {
+func updateTransSession(session *Session, update *types.SessionUnion, cl *config.ModelConfigLoader, ml *model.ModelLoader, appConfig *config.ApplicationConfig) error {
 	sessionLock.Lock()
 	defer sessionLock.Unlock()
 
-	trUpd := update.InputAudioTranscription
+	// In transcription session update, we look at Transcription field
+	if update.Transcription == nil || update.Transcription.Audio == nil || update.Transcription.Audio.Input == nil {
+		return nil
+	}
+
+	trUpd := update.Transcription.Audio.Input.Transcription
 	trCur := session.InputAudioTranscription
 
 	session.TranscriptionOnly = true
@@ -539,12 +502,13 @@ func updateTransSession(session *Session, update *types.ClientSession, cl *confi
 			Transcription: trUpd.Model,
 		}
 
-		m, _, err := newTranscriptionOnlyModel(&pipeline, cl, ml, appConfig)
+		m, cfg, err := newTranscriptionOnlyModel(&pipeline, cl, ml, appConfig)
 		if err != nil {
 			return err
 		}
 
 		session.ModelInterface = m
+		session.ModelConfig = cfg
 	}
 
 	if trUpd != nil {
@@ -552,33 +516,39 @@ func updateTransSession(session *Session, update *types.ClientSession, cl *confi
 		trCur.Prompt = trUpd.Prompt
 	}
 
-	if update.TurnDetection != nil && update.TurnDetection.Type != "" {
-		session.TurnDetection.Type = types.ServerTurnDetectionType(update.TurnDetection.Type)
-		session.TurnDetection.TurnDetectionParams = update.TurnDetection.TurnDetectionParams
+	if update.Transcription.Audio.Input.TurnDetection != nil {
+		session.TurnDetection = update.Transcription.Audio.Input.TurnDetection
 	}
 
 	return nil
 }
 
-func updateSession(session *Session, update *types.ClientSession, cl *config.ModelConfigLoader, ml *model.ModelLoader, appConfig *config.ApplicationConfig) error {
+func updateSession(session *Session, update *types.SessionUnion, cl *config.ModelConfigLoader, ml *model.ModelLoader, appConfig *config.ApplicationConfig) error {
 	sessionLock.Lock()
 	defer sessionLock.Unlock()
 
+	if update.Realtime == nil {
+		return nil
+	}
+
 	session.TranscriptionOnly = false
+	rt := update.Realtime
 
-	if update.Voice != "" {
-		session.Voice = update.Voice
+	if rt.Audio != nil && rt.Audio.Output != nil && rt.Audio.Output.Voice != "" {
+		session.Voice = string(rt.Audio.Output.Voice)
 	}
 
-	if update.Model != "" {
-		session.Model = update.Model
+	if rt.Model != "" {
+		session.Model = rt.Model
 	}
 
-	if update.InputAudioTranscription != nil {
-		session.InputAudioTranscription = update.InputAudioTranscription
+	if rt.Audio != nil && rt.Audio.Input != nil && rt.Audio.Input.Transcription != nil {
+		session.InputAudioTranscription = rt.Audio.Input.Transcription
 	}
 
-	if update.Model != "" || update.Voice != "" || update.InputAudioTranscription != nil {
+	// Re-init model if needed
+	// Note: checking if fields changed would be better
+	if rt.Model != "" || (rt.Audio != nil && rt.Audio.Output != nil && rt.Audio.Output.Voice != "") || (rt.Audio != nil && rt.Audio.Input != nil && rt.Audio.Input.Transcription != nil) {
 		pipeline := config.Pipeline{
 			VAD:           defaultVADModel,
 			LLM:           session.Model,
@@ -590,33 +560,38 @@ func updateSession(session *Session, update *types.ClientSession, cl *config.Mod
 			return err
 		}
 		session.ModelInterface = m
+		if wm, ok := m.(*wrappedModel); ok {
+			session.ModelConfig = wm.LLMConfig
+		} else if a2a, ok := m.(*anyToAnyModel); ok {
+			session.ModelConfig = a2a.LLMConfig
+		}
 	}
 
-	if update.TurnDetection != nil && update.TurnDetection.Type != "" {
-		session.TurnDetection.Type = types.ServerTurnDetectionType(update.TurnDetection.Type)
-		session.TurnDetection.TurnDetectionParams = update.TurnDetection.TurnDetectionParams
+	if rt.Audio != nil && rt.Audio.Input != nil && rt.Audio.Input.TurnDetection != nil {
+		session.TurnDetection = rt.Audio.Input.TurnDetection
 	}
-	// TODO: We should actually check if the field was present in the JSON; empty string means clear the settings
-	if update.Instructions != "" {
-		session.Instructions = update.Instructions
+
+	if rt.Instructions != "" {
+		session.Instructions = rt.Instructions
 	}
-	// if update.Tools != nil {
-	// 	return fmt.Errorf("Haven't implemented tools")
-	// }
 
 	return nil
 }
 
 // handleVAD is a goroutine that listens for audio data from the client,
 // runs VAD on the audio data, and commits utterances to the conversation
-func handleVAD(cfg *config.ModelConfig, evaluator *templates.Evaluator, session *Session, conv *Conversation, c *websocket.Conn, done chan struct{}) {
+func handleVAD(evaluator *templates.Evaluator, session *Session, conv *Conversation, c *websocket.Conn, done chan struct{}) {
 	vadContext, cancel := context.WithCancel(context.Background())
 	go func() {
 		<-done
 		cancel()
 	}()
 
-	silenceThreshold := float64(session.TurnDetection.SilenceDurationMs) / 1000
+	silenceThreshold := 0.5 // Default 500ms
+	if session.TurnDetection.ServerVad != nil {
+		silenceThreshold = float64(session.TurnDetection.ServerVad.SilenceDurationMs) / 1000
+	}
+
 	speechStarted := false
 	startTime := time.Now()
 
@@ -665,7 +640,6 @@ func handleVAD(cfg *config.ModelConfig, evaluator *templates.Evaluator, session 
 				sendEvent(c, types.InputAudioBufferClearedEvent{
 					ServerEventBase: types.ServerEventBase{
 						EventID: "event_TODO",
-						Type:    types.ServerEventTypeInputAudioBufferCleared,
 					},
 				})
 
@@ -678,7 +652,6 @@ func handleVAD(cfg *config.ModelConfig, evaluator *templates.Evaluator, session 
 				sendEvent(c, types.InputAudioBufferSpeechStartedEvent{
 					ServerEventBase: types.ServerEventBase{
 						EventID: "event_TODO",
-						Type:    types.ServerEventTypeInputAudioBufferSpeechStarted,
 					},
 					AudioStartMs: time.Since(startTime).Milliseconds(),
 				})
@@ -700,7 +673,6 @@ func handleVAD(cfg *config.ModelConfig, evaluator *templates.Evaluator, session 
 				sendEvent(c, types.InputAudioBufferSpeechStoppedEvent{
 					ServerEventBase: types.ServerEventBase{
 						EventID: "event_TODO",
-						Type:    types.ServerEventTypeInputAudioBufferSpeechStopped,
 					},
 					AudioEndMs: time.Since(startTime).Milliseconds(),
 				})
@@ -709,7 +681,6 @@ func handleVAD(cfg *config.ModelConfig, evaluator *templates.Evaluator, session 
 				sendEvent(c, types.InputAudioBufferCommittedEvent{
 					ServerEventBase: types.ServerEventBase{
 						EventID: "event_TODO",
-						Type:    types.ServerEventTypeInputAudioBufferCommitted,
 					},
 					ItemID:         generateItemID(),
 					PreviousItemID: "TODO",
@@ -717,13 +688,13 @@ func handleVAD(cfg *config.ModelConfig, evaluator *templates.Evaluator, session 
 
 				abytes := sound.Int16toBytesLE(aints)
 				// TODO: Remove prefix silence that is is over TurnDetectionParams.PrefixPaddingMs
-				go commitUtterance(vadContext, abytes, cfg, evaluator, session, conv, c)
+				go commitUtterance(vadContext, abytes, evaluator, session, conv, c)
 			}
 		}
 	}
 }
 
-func commitUtterance(ctx context.Context, utt []byte, cfg *config.ModelConfig, evaluator *templates.Evaluator, session *Session, conv *Conversation, c *websocket.Conn) {
+func commitUtterance(ctx context.Context, utt []byte, evaluator *templates.Evaluator, session *Session, conv *Conversation, c *websocket.Conn) {
 	if len(utt) == 0 {
 		return
 	}
@@ -757,7 +728,7 @@ func commitUtterance(ctx context.Context, utt []byte, cfg *config.ModelConfig, e
 			Dst:       f.Name(),
 			Language:  session.InputAudioTranscription.Language,
 			Translate: false,
-			Threads:   uint32(*cfg.Threads),
+			Threads:   uint32(*session.ModelConfig.Threads),
 			Prompt:    session.InputAudioTranscription.Prompt,
 		})
 		if err != nil {
@@ -765,15 +736,14 @@ func commitUtterance(ctx context.Context, utt []byte, cfg *config.ModelConfig, e
 		}
 
 		transcript = tr.GetText()
-		sendEvent(c, types.ResponseAudioTranscriptDoneEvent{
+		sendEvent(c, types.ConversationItemInputAudioTranscriptionCompletedEvent{
 			ServerEventBase: types.ServerEventBase{
-				Type:    types.ServerEventTypeResponseAudioTranscriptDone,
 				EventID: "event_TODO",
 			},
 
-			ItemID:       generateItemID(),
-			ResponseID:   "resp_TODO",
-			OutputIndex:  0,
+			ItemID: generateItemID(),
+			// ResponseID:   "resp_TODO", // Not needed for transcription completed event
+			// OutputIndex:  0,
 			ContentIndex: 0,
 			Transcript:   transcript,
 		})
@@ -783,7 +753,7 @@ func commitUtterance(ctx context.Context, utt []byte, cfg *config.ModelConfig, e
 	}
 
 	if !session.TranscriptionOnly {
-		generateResponse(cfg, evaluator, session, utt, transcript, conv, ResponseCreate{}, c, websocket.TextMessage)
+		generateResponse(session.ModelConfig, evaluator, session, utt, transcript, conv, ResponseCreate{}, c, websocket.TextMessage)
 	}
 }
 
@@ -811,16 +781,16 @@ func runVAD(ctx context.Context, session *Session, adata []int16) ([]*proto.VADS
 func generateResponse(config *config.ModelConfig, evaluator *templates.Evaluator, session *Session, utt []byte, transcript string, conv *Conversation, responseCreate ResponseCreate, c *websocket.Conn, mt int) {
 	xlog.Debug("Generating realtime response...")
 
-	item := types.MessageItem{
-		ID:     generateItemID(),
-		Type:   "message",
-		Status: "completed",
-		Role:   "user",
-		Content: []types.MessageContentPart{
-			{
-				Type:       types.MessageContentTypeInputAudio,
-				Audio:      base64.StdEncoding.EncodeToString(utt),
-				Transcript: transcript,
+	item := types.MessageItemUnion{
+		User: &types.MessageItemUser{
+			ID:     generateItemID(),
+			Status: types.ItemStatusCompleted,
+			Content: []types.MessageContentInput{
+				{
+					Type:       types.MessageContentTypeInputAudio,
+					Audio:      base64.StdEncoding.EncodeToString(utt),
+					Transcript: transcript,
+				},
 			},
 		},
 	}
@@ -829,9 +799,6 @@ func generateResponse(config *config.ModelConfig, evaluator *templates.Evaluator
 	conv.Lock.Unlock()
 
 	sendEvent(c, types.ConversationItemAddedEvent{
-		ServerEventBase: types.ServerEventBase{
-			Type: types.ServerEventTypeConversationItemAdded,
-		},
 		Item: item,
 	})
 
@@ -839,37 +806,62 @@ func generateResponse(config *config.ModelConfig, evaluator *templates.Evaluator
 	conv.Lock.Lock()
 	var conversationHistory schema.Messages
 	for _, item := range conv.Items {
-		for _, content := range item.Content {
-			switch content.Type {
-			case types.MessageContentTypeInputText, types.MessageContentTypeOutputText:
+		if item.User != nil {
+			for _, content := range item.User.Content {
+				switch content.Type {
+				case types.MessageContentTypeInputText:
+					conversationHistory = append(conversationHistory, schema.Message{
+						Role:          string(types.MessageRoleUser),
+						StringContent: content.Text,
+						Content:       content.Text,
+					})
+				case types.MessageContentTypeInputAudio:
+					conversationHistory = append(conversationHistory, schema.Message{
+						Role:          string(types.MessageRoleUser),
+						StringContent: content.Transcript,
+						Content:       content.Transcript,
+						StringAudios:  []string{content.Audio},
+					})
+				}
+			}
+		} else if item.Assistant != nil {
+			for _, content := range item.Assistant.Content {
+				switch content.Type {
+				case types.MessageContentTypeOutputText:
+					conversationHistory = append(conversationHistory, schema.Message{
+						Role:          string(types.MessageRoleAssistant),
+						StringContent: content.Text,
+						Content:       content.Text,
+					})
+				case types.MessageContentTypeOutputAudio:
+					conversationHistory = append(conversationHistory, schema.Message{
+						Role:          string(types.MessageRoleAssistant),
+						StringContent: content.Transcript,
+						Content:       content.Transcript,
+						StringAudios:  []string{content.Audio},
+					})
+				}
+			}
+		} else if item.System != nil {
+			for _, content := range item.System.Content {
 				conversationHistory = append(conversationHistory, schema.Message{
-					Role:          string(item.Role),
+					Role:          string(types.MessageRoleSystem),
 					StringContent: content.Text,
 					Content:       content.Text,
-				})
-			case types.MessageContentTypeInputAudio, types.MessageContentTypeOutputAudio:
-				conversationHistory = append(conversationHistory, schema.Message{
-					Role:          string(item.Role),
-					StringContent: content.Transcript,
-					Content:       content.Transcript,
-					StringAudios:  []string{content.Audio},
 				})
 			}
 		}
 	}
 	conv.Lock.Unlock()
 
-	item = types.MessageItem{
-		ID:     generateItemID(),
-		Type:   types.MessageItemTypeMessage,
-		Status: types.ItemStatusInProgress,
-		Role:   types.MessageRoleAssistant,
+	item = types.MessageItemUnion{
+		Assistant: &types.MessageItemAssistant{
+			ID:     generateItemID(),
+			Status: types.ItemStatusInProgress,
+		},
 	}
 
 	sendEvent(c, types.ConversationItemAddedEvent{
-		ServerEventBase: types.ServerEventBase{
-			Type: types.ServerEventTypeConversationItemAdded,
-		},
 		Item: item,
 	})
 
@@ -904,7 +896,7 @@ func generateResponse(config *config.ModelConfig, evaluator *templates.Evaluator
 	// TODO: We can use the PredictStream method, but then can we stream the results of that to TTS?
 	reply, err := session.ModelInterface.Predict(context.TODO(), &opts)
 	if err != nil {
-		sendError(c, "inference_failed", fmt.Sprintf("backend error: %v", err), "", item.ID)
+		sendError(c, "inference_failed", fmt.Sprintf("backend error: %v", err), "", item.Assistant.ID)
 		return
 	}
 
@@ -914,8 +906,8 @@ func generateResponse(config *config.ModelConfig, evaluator *templates.Evaluator
 	}
 
 	conv.Lock.Lock()
-	item.Status = types.ItemStatusCompleted
-	item.Content = []types.MessageContentPart{
+	item.Assistant.Status = types.ItemStatusCompleted
+	item.Assistant.Content = []types.MessageContentOutput{
 		{
 			Type:       types.MessageContentTypeOutputAudio,
 			Transcript: response,
@@ -931,12 +923,12 @@ func generateResponse(config *config.ModelConfig, evaluator *templates.Evaluator
 	res, audioFilePath, err := session.ModelInterface.TTS(context.TODO(), ttsReq)
 	if err != nil {
 		xlog.Error("TTS failed", "error", err)
-		sendError(c, "tts_error", fmt.Sprintf("TTS generation failed: %v", err), "", item.ID)
+		sendError(c, "tts_error", fmt.Sprintf("TTS generation failed: %v", err), "", item.Assistant.ID)
 		return
 	}
 	if !res.Success {
 		xlog.Error("TTS failed", "message", res.Message)
-		sendError(c, "tts_error", fmt.Sprintf("TTS generation failed: %s", res.Message), "", item.ID)
+		sendError(c, "tts_error", fmt.Sprintf("TTS generation failed: %s", res.Message), "", item.Assistant.ID)
 		return
 	}
 	defer os.Remove(audioFilePath)
@@ -944,24 +936,20 @@ func generateResponse(config *config.ModelConfig, evaluator *templates.Evaluator
 	audioBytes, err := os.ReadFile(audioFilePath)
 	if err != nil {
 		xlog.Error("failed to read TTS file", "error", err)
-		sendError(c, "tts_error", fmt.Sprintf("Failed to read TTS audio: %v", err), "", item.ID)
+		sendError(c, "tts_error", fmt.Sprintf("Failed to read TTS audio: %v", err), "", item.Assistant.ID)
 		return
 	}
 	audioString := base64.StdEncoding.EncodeToString(audioBytes)
 
-	sendEvent(c, types.ResponseAudioDeltaEvent{
-		ServerEventBase: types.ServerEventBase{
-			Type: types.ServerEventTypeResponseAudioDelta,
-		},
-		ItemID: item.ID,
+	sendEvent(c, types.ResponseOutputAudioDeltaEvent{
+		ServerEventBase: types.ServerEventBase{},
+		ItemID:          item.Assistant.ID,
 		// TODO: OutputIndex and ContentIndex
 		Delta: audioString,
 	})
-	sendEvent(c, types.ResponseAudioDoneEvent{
-		ServerEventBase: types.ServerEventBase{
-			Type: types.ServerEventTypeResponseAudioDone,
-		},
-		ItemID: item.ID,
+	sendEvent(c, types.ResponseOutputAudioDoneEvent{
+		ServerEventBase: types.ServerEventBase{},
+		ItemID:          item.Assistant.ID,
 		// TODO: Indexs
 	})
 
@@ -969,12 +957,10 @@ func generateResponse(config *config.ModelConfig, evaluator *templates.Evaluator
 	// It's sent as audio deltas or the user can request it with conversation.item.retrieve.
 	conv.Lock.Lock()
 	doneEvent := types.ConversationItemDoneEvent{
-		ServerEventBase: types.ServerEventBase{
-			Type: types.ServerEventTypeConversationItemDone,
-		},
-		Item: item,
+		ServerEventBase: types.ServerEventBase{},
+		Item:            item,
 	}
-	item.Content[0].Audio = audioString
+	item.Assistant.Content[0].Audio = audioString
 	conv.Lock.Unlock()
 
 	sendEvent(c, doneEvent)
