@@ -34,10 +34,6 @@ import (
 const (
 	localSampleRate  = 16000
 	remoteSampleRate = 24000
-	defaultVADModel  = "silero-vad-ggml"
-	defaultVLMModel  = "qwen3-vl-4b-instruct"
-	defaultSTTModel  = "whisper-1"
-	defaultTTSModel  = "tts-1"
 )
 
 // A model can be "emulated" that is: transcribe audio to text -> feed text to the LLM -> generate audio as result
@@ -49,6 +45,7 @@ type Session struct {
 	TranscriptionOnly       bool
 	Model                   string
 	Voice                   string
+	VADModel                string
 	TurnDetection           *types.TurnDetectionUnion // "server_vad", "semantic_vad" or "none"
 	InputAudioTranscription *types.AudioTranscription
 	Functions               functions.Functions
@@ -153,9 +150,6 @@ func Realtime(application *application.Application) echo.HandlerFunc {
 
 		// Extract query parameters from Echo context before passing to websocket handler
 		model := c.QueryParam("model")
-		if model == "" {
-			model = defaultVLMModel
-		}
 
 		registerRealtime(application, model)(ws)
 		return nil
@@ -168,12 +162,35 @@ func registerRealtime(application *application.Application, model string) func(c
 		evaluator := application.TemplatesEvaluator()
 		xlog.Debug("Realtime WebSocket connection established", "address", c.RemoteAddr().String(), "model", model)
 
+		// TODO: Allow any-to-any model to be specified
+		cl := application.ModelConfigLoader()
+		cfg, err := cl.LoadModelConfigFileByNameDefaultOptions(model, application.ApplicationConfig())
+		if err != nil {
+			xlog.Error("failed to load model config", "error", err)
+			sendError(c, "model_load_error", "Failed to load model config", "", "")
+			return
+		}
+
+		if cfg == nil || (cfg.Pipeline.VAD == "" && cfg.Pipeline.Transcription == "" && cfg.Pipeline.TTS == "" && cfg.Pipeline.LLM == "") {
+			xlog.Error("model is not a pipeline", "model", model)
+			sendError(c, "invalid_model", "Model is not a pipeline model", "", "")
+			return
+		}
+
+		vadModel := cfg.Pipeline.VAD
+		sttModel := cfg.Pipeline.Transcription
+		ttsModel := cfg.Pipeline.TTS
+		// The model here is just the name of the pipeline model
+		// the actual LLM model is the one specified in the pipeline
+		llmModel := model
+
 		sessionID := generateSessionID()
 		session := &Session{
 			ID:                sessionID,
 			TranscriptionOnly: false,
-			Model:             model,
-			Voice:             defaultTTSModel,
+			Model:             llmModel,
+			Voice:             ttsModel,
+			VADModel:          vadModel,
 			TurnDetection: &types.TurnDetectionUnion{
 				ServerVad: &types.ServerVad{
 					Threshold:         0.5,
@@ -183,7 +200,7 @@ func registerRealtime(application *application.Application, model string) func(c
 				},
 			},
 			InputAudioTranscription: &types.AudioTranscription{
-				Model: defaultSTTModel,
+				Model: sttModel,
 			},
 			Conversations: make(map[string]*Conversation),
 		}
@@ -199,15 +216,8 @@ func registerRealtime(application *application.Application, model string) func(c
 		session.Conversations[conversationID] = conversation
 		session.DefaultConversationID = conversationID
 
-		pipeline := config.Pipeline{
-			VAD:           defaultVADModel,
-			Transcription: session.InputAudioTranscription.Model,
-			LLM:           session.Model,
-			TTS:           session.Voice,
-		}
-
 		m, err := newModel(
-			&pipeline,
+			&cfg.Pipeline,
 			application.ModelConfigLoader(),
 			application.ModelLoader(),
 			application.ApplicationConfig(),
@@ -498,7 +508,7 @@ func updateTransSession(session *Session, update *types.SessionUnion, cl *config
 
 	if trUpd != nil && trUpd.Model != "" && trUpd.Model != trCur.Model {
 		pipeline := config.Pipeline{
-			VAD:           defaultVADModel,
+			VAD:           session.VADModel,
 			Transcription: trUpd.Model,
 		}
 
@@ -534,28 +544,39 @@ func updateSession(session *Session, update *types.SessionUnion, cl *config.Mode
 	session.TranscriptionOnly = false
 	rt := update.Realtime
 
-	if rt.Audio != nil && rt.Audio.Output != nil && rt.Audio.Output.Voice != "" {
-		session.Voice = string(rt.Audio.Output.Voice)
+	if rt.Model != "" {
+		cfg, err := cl.LoadModelConfigFileByNameDefaultOptions(rt.Model, appConfig)
+		if err != nil {
+			return err
+		}
+		if cfg == nil || (cfg.Pipeline.VAD == "" || cfg.Pipeline.Transcription == "" || cfg.Pipeline.TTS == "" || cfg.Pipeline.LLM == "") {
+			return fmt.Errorf("model is not a valid pipeline model: %s", rt.Model)
+		}
+
+		session.VADModel = cfg.Pipeline.VAD
+		if session.InputAudioTranscription == nil {
+			session.InputAudioTranscription = &types.AudioTranscription{}
+		}
+		session.InputAudioTranscription.Model = cfg.Pipeline.Transcription
+		session.Voice = cfg.Pipeline.TTS
+		session.Model = rt.Model
+		session.ModelConfig = cfg
 	}
 
-	if rt.Model != "" {
-		session.Model = rt.Model
+	if rt.Audio != nil && rt.Audio.Output != nil && rt.Audio.Output.Voice != "" {
+		session.Voice = string(rt.Audio.Output.Voice)
+		session.ModelConfig.Pipeline.TTS = string(rt.Audio.Output.Voice)
 	}
 
 	if rt.Audio != nil && rt.Audio.Input != nil && rt.Audio.Input.Transcription != nil {
 		session.InputAudioTranscription = rt.Audio.Input.Transcription
+		session.ModelConfig.Pipeline.Transcription = rt.Audio.Input.Transcription.Model
 	}
 
 	// Re-init model if needed
 	// Note: checking if fields changed would be better
 	if rt.Model != "" || (rt.Audio != nil && rt.Audio.Output != nil && rt.Audio.Output.Voice != "") || (rt.Audio != nil && rt.Audio.Input != nil && rt.Audio.Input.Transcription != nil) {
-		pipeline := config.Pipeline{
-			VAD:           defaultVADModel,
-			LLM:           session.Model,
-			Transcription: session.InputAudioTranscription.Model,
-			TTS:           session.Voice,
-		}
-		m, err := newModel(&pipeline, cl, ml, appConfig)
+		m, err := newModel(&session.ModelConfig.Pipeline, cl, ml, appConfig)
 		if err != nil {
 			return err
 		}
