@@ -43,9 +43,10 @@ const (
 type Session struct {
 	ID                      string
 	TranscriptionOnly       bool
+	// The pipeline or any-to-any model name (full realtime mode)
 	Model                   string
+	// The voice may be a TTS model name or a parameter passed to a TTS model
 	Voice                   string
-	VADModel                string
 	TurnDetection           *types.TurnDetectionUnion // "server_vad", "semantic_vad" or "none"
 	InputAudioTranscription *types.AudioTranscription
 	Functions               functions.Functions
@@ -55,6 +56,7 @@ type Session struct {
 	Instructions            string
 	DefaultConversationID   string
 	ModelInterface          Model
+	// The pipeline model config or the config for an any-to-any model
 	ModelConfig             *config.ModelConfig
 }
 
@@ -177,20 +179,16 @@ func registerRealtime(application *application.Application, model string) func(c
 			return
 		}
 
-		vadModel := cfg.Pipeline.VAD
 		sttModel := cfg.Pipeline.Transcription
 		ttsModel := cfg.Pipeline.TTS
-		// The model here is just the name of the pipeline model
-		// the actual LLM model is the one specified in the pipeline
-		llmModel := model
 
 		sessionID := generateSessionID()
 		session := &Session{
 			ID:                sessionID,
 			TranscriptionOnly: false,
-			Model:             llmModel,
+			Model:             model,
 			Voice:             ttsModel,
-			VADModel:          vadModel,
+			ModelConfig:       cfg,
 			TurnDetection: &types.TurnDetectionUnion{
 				ServerVad: &types.ServerVad{
 					Threshold:         0.5,
@@ -228,12 +226,6 @@ func registerRealtime(application *application.Application, model string) func(c
 			return
 		}
 		session.ModelInterface = m
-
-		if wm, ok := m.(*wrappedModel); ok {
-			session.ModelConfig = wm.LLMConfig
-		} else if a2a, ok := m.(*anyToAnyModel); ok {
-			session.ModelConfig = a2a.LLMConfig
-		}
 
 		// Store the session
 		sessionLock.Lock()
@@ -507,12 +499,15 @@ func updateTransSession(session *Session, update *types.SessionUnion, cl *config
 	session.TranscriptionOnly = true
 
 	if trUpd != nil && trUpd.Model != "" && trUpd.Model != trCur.Model {
-		pipeline := config.Pipeline{
-			VAD:           session.VADModel,
-			Transcription: trUpd.Model,
+		cfg, err := cl.LoadModelConfigFileByNameDefaultOptions(trUpd.Model, appConfig)
+		if err != nil {
+			return err
+		}
+		if cfg == nil || (cfg.Pipeline.VAD == "" || cfg.Pipeline.Transcription == "") {
+			return fmt.Errorf("model is not a valid pipeline model: %s", trUpd.Model)
 		}
 
-		m, cfg, err := newTranscriptionOnlyModel(&pipeline, cl, ml, appConfig)
+		m, cfg, err := newTranscriptionOnlyModel(&cfg.Pipeline, cl, ml, appConfig)
 		if err != nil {
 			return err
 		}
@@ -553,7 +548,6 @@ func updateSession(session *Session, update *types.SessionUnion, cl *config.Mode
 			return fmt.Errorf("model is not a valid pipeline model: %s", rt.Model)
 		}
 
-		session.VADModel = cfg.Pipeline.VAD
 		if session.InputAudioTranscription == nil {
 			session.InputAudioTranscription = &types.AudioTranscription{}
 		}
@@ -564,8 +558,7 @@ func updateSession(session *Session, update *types.SessionUnion, cl *config.Mode
 	}
 
 	if rt.Audio != nil && rt.Audio.Output != nil && rt.Audio.Output.Voice != "" {
-		session.Voice = string(rt.Audio.Output.Voice)
-		session.ModelConfig.Pipeline.TTS = string(rt.Audio.Output.Voice)
+		xlog.Warn("Ignoring voice setting; not implemented", "voice", rt.Audio.Output.Voice)
 	}
 
 	if rt.Audio != nil && rt.Audio.Input != nil && rt.Audio.Input.Transcription != nil {
@@ -573,19 +566,12 @@ func updateSession(session *Session, update *types.SessionUnion, cl *config.Mode
 		session.ModelConfig.Pipeline.Transcription = rt.Audio.Input.Transcription.Model
 	}
 
-	// Re-init model if needed
-	// Note: checking if fields changed would be better
 	if rt.Model != "" || (rt.Audio != nil && rt.Audio.Output != nil && rt.Audio.Output.Voice != "") || (rt.Audio != nil && rt.Audio.Input != nil && rt.Audio.Input.Transcription != nil) {
 		m, err := newModel(&session.ModelConfig.Pipeline, cl, ml, appConfig)
 		if err != nil {
 			return err
 		}
 		session.ModelInterface = m
-		if wm, ok := m.(*wrappedModel); ok {
-			session.ModelConfig = wm.LLMConfig
-		} else if a2a, ok := m.(*anyToAnyModel); ok {
-			session.ModelConfig = a2a.LLMConfig
-		}
 	}
 
 	if rt.Audio != nil && rt.Audio.Input != nil && rt.Audio.Input.TurnDetection != nil {
@@ -823,9 +809,14 @@ func generateResponse(config *config.ModelConfig, evaluator *templates.Evaluator
 		Item: item,
 	})
 
-	// Compile the conversation history
-	conv.Lock.Lock()
 	var conversationHistory schema.Messages
+	conversationHistory = append(conversationHistory, schema.Message{
+		Role:          string(types.MessageRoleSystem),
+		StringContent: session.Instructions,
+		Content:       session.Instructions,
+	})
+
+	conv.Lock.Lock()
 	for _, item := range conv.Items {
 		if item.User != nil {
 			for _, content := range item.User.Content {

@@ -188,6 +188,7 @@ func newTranscriptionOnlyModel(pipeline *config.Pipeline, cl *config.ModelConfig
 
 // returns and loads either a wrapped model or a model that support audio-to-audio
 func newModel(pipeline *config.Pipeline, cl *config.ModelConfigLoader, ml *model.ModelLoader, appConfig *config.ApplicationConfig) (Model, error) {
+	xlog.Debug("Creating new model pipeline model", "pipeline", pipeline)
 
 	cfgVAD, err := cl.LoadModelConfigFileByName(pipeline.VAD, ml.ModelPath)
 	if err != nil {
