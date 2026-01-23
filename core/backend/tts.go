@@ -18,9 +18,9 @@ func ModelTTS(
 	voice,
 	language string,
 	loader *model.ModelLoader,
-	appConfig *config.ApplicationConfig,
 	modelConfig config.ModelConfig,
 ) (string, *proto.Result, error) {
+	appConfig := loader.ApplicationConfig()
 	opts := ModelOptions(modelConfig, appConfig)
 	ttsModel, err := loader.Load(opts...)
 	if err != nil {

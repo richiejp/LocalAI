@@ -24,7 +24,7 @@ import (
 // @Param request body schema.OpenAIRequest true "query params"
 // @Success 200 {object} schema.OpenAIResponse "Response"
 // @Router /v1/completions [post]
-func CompletionEndpoint(cl *config.ModelConfigLoader, ml *model.ModelLoader, evaluator *templates.Evaluator, appConfig *config.ApplicationConfig) echo.HandlerFunc {
+func CompletionEndpoint(ml *model.ModelLoader, evaluator *templates.Evaluator) echo.HandlerFunc {
 	process := func(id string, s string, req *schema.OpenAIRequest, config *config.ModelConfig, loader *model.ModelLoader, responses chan schema.OpenAIResponse, extraUsage bool) error {
 		tokenCallback := func(s string, tokenUsage backend.TokenUsage) bool {
 			created := int(time.Now().Unix())
@@ -57,7 +57,7 @@ func CompletionEndpoint(cl *config.ModelConfigLoader, ml *model.ModelLoader, eva
 			responses <- resp
 			return true
 		}
-		_, _, err := ComputeChoices(req, s, config, cl, appConfig, loader, func(s string, c *[]schema.Choice) {}, tokenCallback)
+		_, _, err := ComputeChoices(req, s, config, loader, func(s string, c *[]schema.Choice) {}, tokenCallback)
 		close(responses)
 		return err
 	}
@@ -217,7 +217,7 @@ func CompletionEndpoint(cl *config.ModelConfigLoader, ml *model.ModelLoader, eva
 			}
 
 			r, tokenUsage, err := ComputeChoices(
-				input, i, config, cl, appConfig, ml, func(s string, c *[]schema.Choice) {
+				input, i, config, ml, func(s string, c *[]schema.Choice) {
 					stopReason := FinishReasonStop
 					*c = append(*c, schema.Choice{Text: s, FinishReason: &stopReason, Index: k})
 				}, nil)

@@ -12,8 +12,9 @@ import (
 // @Summary List and describe the various models available in the API.
 // @Success 200 {object} schema.ModelsDataResponse "Response"
 // @Router /v1/models [get]
-func ListModelsEndpoint(bcl *config.ModelConfigLoader, ml *model.ModelLoader, appConfig *config.ApplicationConfig) echo.HandlerFunc {
+func ListModelsEndpoint(ml *model.ModelLoader) echo.HandlerFunc {
 	return func(c echo.Context) error {
+		bcl := ml.ConfigLoader()
 		// If blank, no filter is applied.
 		filter := c.QueryParam("filter")
 

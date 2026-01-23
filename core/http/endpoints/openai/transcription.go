@@ -24,7 +24,7 @@ import (
 // @Param file formData file true "file"
 // @Success 200 {object} map[string]string	 "Response"
 // @Router /v1/audio/transcriptions [post]
-func TranscriptEndpoint(cl *config.ModelConfigLoader, ml *model.ModelLoader, appConfig *config.ApplicationConfig) echo.HandlerFunc {
+func TranscriptEndpoint(ml *model.ModelLoader) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		input, ok := c.Get(middleware.CONTEXT_LOCALS_KEY_LOCALAI_REQUEST).(*schema.OpenAIRequest)
 		if !ok || input.Model == "" {
@@ -70,7 +70,7 @@ func TranscriptEndpoint(cl *config.ModelConfigLoader, ml *model.ModelLoader, app
 
 		xlog.Debug("Audio file copied", "dst", dst)
 
-		tr, err := backend.ModelTranscription(dst, input.Language, input.Translate, diarize, prompt, ml, *config, appConfig)
+		tr, err := backend.ModelTranscription(dst, input.Language, input.Translate, diarize, prompt, ml, *config)
 		if err != nil {
 			return err
 		}

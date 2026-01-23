@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mudler/LocalAI/core/config"
 	"github.com/mudler/LocalAI/pkg/system"
 	"github.com/mudler/LocalAI/pkg/utils"
 
@@ -28,11 +29,13 @@ type ModelLoader struct {
 	externalBackends         map[string]string
 	lruEvictionMaxRetries    int           // Maximum number of retries when waiting for busy models
 	lruEvictionRetryInterval time.Duration // Interval between retries when waiting for busy models
+	configLoader             *config.ModelConfigLoader
+	appConfig                *config.ApplicationConfig
 }
 
 // NewModelLoader creates a new ModelLoader instance.
 // LRU eviction is now managed through the WatchDog component.
-func NewModelLoader(system *system.SystemState) *ModelLoader {
+func NewModelLoader(system *system.SystemState, cl *config.ModelConfigLoader) *ModelLoader {
 	nml := &ModelLoader{
 		ModelPath:                system.Model.ModelsPath,
 		models:                   make(map[string]*Model),
@@ -40,9 +43,24 @@ func NewModelLoader(system *system.SystemState) *ModelLoader {
 		externalBackends:         make(map[string]string),
 		lruEvictionMaxRetries:    30,              // Default: 30 retries
 		lruEvictionRetryInterval: 1 * time.Second, // Default: 1 second
+		configLoader:             cl,
 	}
 
 	return nml
+}
+
+// SetApplicationConfig sets the application configuration
+func (ml *ModelLoader) SetApplicationConfig(cfg *config.ApplicationConfig) {
+	ml.mu.Lock()
+	defer ml.mu.Unlock()
+	ml.appConfig = cfg
+}
+
+// ApplicationConfig returns the application configuration
+func (ml *ModelLoader) ApplicationConfig() *config.ApplicationConfig {
+	ml.mu.Lock()
+	defer ml.mu.Unlock()
+	return ml.appConfig
 }
 
 // GetLoadingCount returns the number of models currently being loaded
@@ -50,6 +68,10 @@ func (ml *ModelLoader) GetLoadingCount() int {
 	ml.mu.Lock()
 	defer ml.mu.Unlock()
 	return len(ml.loading)
+}
+
+func (ml *ModelLoader) ConfigLoader() *config.ModelConfigLoader {
+	return ml.configLoader
 }
 
 func (ml *ModelLoader) SetWatchDog(wd *WatchDog) {

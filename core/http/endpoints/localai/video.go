@@ -65,7 +65,8 @@ func downloadFile(url string) (string, error) {
 // @Param request body schema.VideoRequest true "query params"
 // @Success 200 {object} schema.OpenAIResponse "Response"
 // @Router /video [post]
-func VideoEndpoint(cl *config.ModelConfigLoader, ml *model.ModelLoader, appConfig *config.ApplicationConfig) echo.HandlerFunc {
+func VideoEndpoint(ml *model.ModelLoader) echo.HandlerFunc {
+	appConfig := ml.ApplicationConfig()
 	return func(c echo.Context) error {
 		input, ok := c.Get(middleware.CONTEXT_LOCALS_KEY_LOCALAI_REQUEST).(*schema.VideoRequest)
 		if !ok || input.Model == "" {
@@ -182,7 +183,6 @@ func VideoEndpoint(cl *config.ModelConfigLoader, ml *model.ModelLoader, appConfi
 			input.Step,
 			ml,
 			*config,
-			appConfig,
 		)
 		if err != nil {
 			return err

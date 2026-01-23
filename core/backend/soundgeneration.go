@@ -20,10 +20,10 @@ func SoundGeneration(
 	sourceFile *string,
 	sourceDivisor *int32,
 	loader *model.ModelLoader,
-	appConfig *config.ApplicationConfig,
 	modelConfig config.ModelConfig,
 ) (string, *proto.Result, error) {
 
+	appConfig := loader.ApplicationConfig()
 	opts := ModelOptions(modelConfig, appConfig)
 	soundGenModel, err := loader.Load(opts...)
 	if err != nil {

@@ -12,9 +12,9 @@ import (
 func TokenMetrics(
 	modelFile string,
 	loader *model.ModelLoader,
-	appConfig *config.ApplicationConfig,
 	modelConfig config.ModelConfig) (*proto.MetricsResponse, error) {
 
+	appConfig := loader.ApplicationConfig()
 	opts := ModelOptions(modelConfig, appConfig, model.WithModel(modelFile))
 	model, err := loader.Load(opts...)
 	if err != nil {

@@ -26,7 +26,7 @@ import (
 // @Param request body schema.OpenAIRequest true "query params"
 // @Success 200 {object} schema.OpenAIResponse "Response"
 // @Router /v1/chat/completions [post]
-func ChatEndpoint(cl *config.ModelConfigLoader, ml *model.ModelLoader, evaluator *templates.Evaluator, startupOptions *config.ApplicationConfig) echo.HandlerFunc {
+func ChatEndpoint(ml *model.ModelLoader, evaluator *templates.Evaluator) echo.HandlerFunc {
 	var id, textContentToReturn string
 	var created int
 
@@ -54,7 +54,7 @@ func ChatEndpoint(cl *config.ModelConfigLoader, ml *model.ModelLoader, evaluator
 		lastEmittedReasoning := ""
 		lastEmittedCleanedContent := ""
 
-		_, _, err := ComputeChoices(req, s, config, cl, startupOptions, loader, func(s string, c *[]schema.Choice) {}, func(s string, tokenUsage backend.TokenUsage) bool {
+		_, _, err := ComputeChoices(req, s, config, loader, func(s string, c *[]schema.Choice) {}, func(s string, tokenUsage backend.TokenUsage) bool {
 			accumulatedContent += s
 
 			currentReasoning, cleanedContent := reason.ExtractReasoningWithConfig(accumulatedContent, thinkingStartToken, config.ReasoningConfig)
@@ -140,7 +140,7 @@ func ChatEndpoint(cl *config.ModelConfigLoader, ml *model.ModelLoader, evaluator
 
 		result := ""
 		lastEmittedCount := 0
-		_, tokenUsage, err := ComputeChoices(req, prompt, config, cl, startupOptions, loader, func(s string, c *[]schema.Choice) {}, func(s string, usage backend.TokenUsage) bool {
+		_, tokenUsage, err := ComputeChoices(req, prompt, config, loader, func(s string, c *[]schema.Choice) {}, func(s string, usage backend.TokenUsage) bool {
 			result += s
 			// Try incremental XML parsing for streaming support using iterative parser
 			// This allows emitting partial tool calls as they're being generated
@@ -269,7 +269,7 @@ func ChatEndpoint(cl *config.ModelConfigLoader, ml *model.ModelLoader, evaluator
 			}
 			responses <- initialMessage
 
-			result, err := handleQuestion(config, cl, req, ml, startupOptions, functionResults, result, prompt)
+			result, err := handleQuestion(config, req, ml, functionResults, result, prompt)
 			if err != nil {
 				xlog.Error("error handling question", "error", err)
 				return err
@@ -670,7 +670,7 @@ func ChatEndpoint(cl *config.ModelConfigLoader, ml *model.ModelLoader, evaluator
 
 				switch {
 				case noActionsToRun:
-					result, err := handleQuestion(config, cl, input, ml, startupOptions, results, s, predInput)
+					result, err := handleQuestion(config, input, ml, results, s, predInput)
 					if err != nil {
 						xlog.Error("error handling question", "error", err)
 						return
@@ -748,8 +748,6 @@ func ChatEndpoint(cl *config.ModelConfigLoader, ml *model.ModelLoader, evaluator
 				input,
 				predInput,
 				config,
-				cl,
-				startupOptions,
 				ml,
 				tokenCallback,
 				nil,
@@ -784,7 +782,7 @@ func ChatEndpoint(cl *config.ModelConfigLoader, ml *model.ModelLoader, evaluator
 	}
 }
 
-func handleQuestion(config *config.ModelConfig, cl *config.ModelConfigLoader, input *schema.OpenAIRequest, ml *model.ModelLoader, o *config.ApplicationConfig, funcResults []functions.FuncCallResults, result, prompt string) (string, error) {
+func handleQuestion(config *config.ModelConfig, input *schema.OpenAIRequest, ml *model.ModelLoader, funcResults []functions.FuncCallResults, result, prompt string) (string, error) {
 
 	if len(funcResults) == 0 && result != "" {
 		xlog.Debug("nothing function results but we had a message from the LLM")
@@ -874,7 +872,7 @@ func handleQuestion(config *config.ModelConfig, cl *config.ModelConfigLoader, in
 		logitBias = input.LogitBias
 	}
 
-	predFunc, err := backend.ModelInference(input.Context, prompt, input.Messages, images, videos, audios, ml, config, cl, o, nil, toolsJSON, toolChoiceJSON, logprobs, topLogprobs, logitBias)
+	predFunc, err := backend.ModelInference(input.Context, prompt, input.Messages, images, videos, audios, ml, config, nil, toolsJSON, toolChoiceJSON, logprobs, topLogprobs, logitBias)
 	if err != nil {
 		xlog.Error("model inference failed", "error", err)
 		return "", err

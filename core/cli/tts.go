@@ -48,7 +48,9 @@ func (t *TTSCMD) Run(ctx *cliContext.Context) error {
 		GeneratedContentDir: outputDir,
 	}
 
-	ml := model.NewModelLoader(systemState)
+	cl := config.NewModelConfigLoader(t.ModelsPath)
+	ml := model.NewModelLoader(systemState, cl)
+	ml.SetApplicationConfig(opts)
 
 	defer func() {
 		err := ml.StopAllGRPC()
@@ -62,7 +64,7 @@ func (t *TTSCMD) Run(ctx *cliContext.Context) error {
 	options.Backend = t.Backend
 	options.Model = t.Model
 
-	filePath, _, err := backend.ModelTTS(text, t.Voice, t.Language, ml, opts, options)
+	filePath, _, err := backend.ModelTTS(text, t.Voice, t.Language, ml, options)
 	if err != nil {
 		return err
 	}

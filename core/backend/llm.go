@@ -35,12 +35,14 @@ type TokenUsage struct {
 	TimingTokenGeneration  float64
 }
 
-func ModelInference(ctx context.Context, s string, messages schema.Messages, images, videos, audios []string, loader *model.ModelLoader, c *config.ModelConfig, cl *config.ModelConfigLoader, o *config.ApplicationConfig, tokenCallback func(string, TokenUsage) bool, tools string, toolChoice string, logprobs *int, topLogprobs *int, logitBias map[string]float64) (func() (LLMResponse, error), error) {
+func ModelInference(ctx context.Context, s string, messages schema.Messages, images, videos, audios []string, loader *model.ModelLoader, c *config.ModelConfig, tokenCallback func(string, TokenUsage) bool, tools string, toolChoice string, logprobs *int, topLogprobs *int, logitBias map[string]float64) (func() (LLMResponse, error), error) {
 	modelFile := c.Model
+
+	o := loader.ApplicationConfig()
 
 	// Check if the modelFile exists, if it doesn't try to load it from the gallery
 	if o.AutoloadGalleries { // experimental
-		modelNames, err := services.ListModels(cl, loader, nil, services.SKIP_ALWAYS)
+		modelNames, err := services.ListModels(loader.ConfigLoader(), loader, nil, services.SKIP_ALWAYS)
 		if err != nil {
 			return nil, err
 		}
@@ -70,7 +72,7 @@ func ModelInference(ctx context.Context, s string, messages schema.Messages, ima
 
 	// in GRPC, the backend is supposed to answer to 1 single token if stream is not supported
 	fn := func() (LLMResponse, error) {
-		opts := gRPCPredictOpts(*c, loader.ModelPath)
+		opts := model.GrpcPredictOpts(*c, loader.ModelPath)
 		opts.Prompt = s
 		opts.Messages = protoMessages
 		opts.UseTokenizerTemplate = c.TemplateConfig.UseTokenizerTemplate

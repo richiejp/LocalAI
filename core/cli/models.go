@@ -80,10 +80,11 @@ func (mi *ModelsInstall) Run(ctx *cliContext.Context) error {
 		return err
 	}
 
+	cl := config.NewModelConfigLoader(mi.ModelsPath)
 	galleryService := services.NewGalleryService(&config.ApplicationConfig{
 		SystemState: systemState,
-	}, model.NewModelLoader(systemState))
-	err = galleryService.Start(context.Background(), config.NewModelConfigLoader(mi.ModelsPath), systemState)
+	}, model.NewModelLoader(systemState, cl))
+	err = galleryService.Start(context.Background(), cl, systemState)
 	if err != nil {
 		return err
 	}
@@ -134,7 +135,7 @@ func (mi *ModelsInstall) Run(ctx *cliContext.Context) error {
 			}
 		}
 
-		modelLoader := model.NewModelLoader(systemState)
+		modelLoader := model.NewModelLoader(systemState, cl)
 		err = startup.InstallModels(context.Background(), galleryService, galleries, backendGalleries, systemState, modelLoader, !mi.DisablePredownloadScan, mi.AutoloadBackendGalleries, progressCallback, modelName)
 		if err != nil {
 			return err

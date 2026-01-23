@@ -58,7 +58,8 @@ type MCPErrorEvent struct {
 // @Param request body schema.OpenAIRequest true "query params"
 // @Success 200 {object} schema.OpenAIResponse "Response"
 // @Router /v1/mcp/chat/completions [post]
-func MCPEndpoint(cl *config.ModelConfigLoader, ml *model.ModelLoader, evaluator *templates.Evaluator, appConfig *config.ApplicationConfig) echo.HandlerFunc {
+func MCPEndpoint(ml *model.ModelLoader, evaluator *templates.Evaluator) echo.HandlerFunc {
+	appConfig := ml.ApplicationConfig()
 	return func(c echo.Context) error {
 		ctx := c.Request().Context()
 		created := int(time.Now().Unix())

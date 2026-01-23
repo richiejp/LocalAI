@@ -9,8 +9,8 @@ import (
 	model "github.com/mudler/LocalAI/pkg/model"
 )
 
-func ModelEmbedding(s string, tokens []int, loader *model.ModelLoader, modelConfig config.ModelConfig, appConfig *config.ApplicationConfig) (func() ([]float32, error), error) {
-
+func ModelEmbedding(s string, tokens []int, loader *model.ModelLoader, modelConfig config.ModelConfig) (func() ([]float32, error), error) {
+	appConfig := loader.ApplicationConfig()
 	opts := ModelOptions(modelConfig, appConfig)
 
 	inferenceModel, err := loader.Load(opts...)
@@ -19,10 +19,10 @@ func ModelEmbedding(s string, tokens []int, loader *model.ModelLoader, modelConf
 	}
 
 	var fn func() ([]float32, error)
-	switch model := inferenceModel.(type) {
+	switch backendModel := inferenceModel.(type) {
 	case grpc.Backend:
 		fn = func() ([]float32, error) {
-			predictOptions := gRPCPredictOpts(modelConfig, loader.ModelPath)
+			predictOptions := model.GrpcPredictOpts(modelConfig, loader.ModelPath)
 			if len(tokens) > 0 {
 				embeds := []int32{}
 
@@ -31,7 +31,7 @@ func ModelEmbedding(s string, tokens []int, loader *model.ModelLoader, modelConf
 				}
 				predictOptions.EmbeddingTokens = embeds
 
-				res, err := model.Embeddings(appConfig.Context, predictOptions)
+				res, err := backendModel.Embeddings(appConfig.Context, predictOptions)
 				if err != nil {
 					return nil, err
 				}
@@ -40,7 +40,7 @@ func ModelEmbedding(s string, tokens []int, loader *model.ModelLoader, modelConf
 			}
 			predictOptions.Embeddings = s
 
-			res, err := model.Embeddings(appConfig.Context, predictOptions)
+			res, err := backendModel.Embeddings(appConfig.Context, predictOptions)
 			if err != nil {
 				return nil, err
 			}

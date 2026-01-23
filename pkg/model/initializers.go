@@ -238,7 +238,17 @@ func (ml *ModelLoader) updateModelLastUsed(m *Model) {
 }
 
 func (ml *ModelLoader) Load(opts ...Option) (grpc.Backend, error) {
+	if ml.configLoader != nil {
+		opts = append(opts, WithModelConfigLoader(ml.configLoader))
+	}
 	o := NewOptions(opts...)
+
+	// Check for pipeline
+	if o.modelConfig != nil && (o.modelConfig.Pipeline.VAD != "" || o.modelConfig.Pipeline.Transcription != "" || o.modelConfig.Pipeline.LLM != "" || o.modelConfig.Pipeline.TTS != "") {
+		// It is a pipeline!
+		// Load it
+		return NewPipelineModel(&o.modelConfig.Pipeline, o.modelConfigLoader, ml, o.appConfig)
+	}
 
 	// Return earlier if we have a model already loaded
 	// (avoid looping through all the backends)

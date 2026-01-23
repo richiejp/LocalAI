@@ -12,8 +12,9 @@ import (
 	"github.com/mudler/LocalAI/pkg/model"
 )
 
-func WelcomeEndpoint(appConfig *config.ApplicationConfig,
-	cl *config.ModelConfigLoader, ml *model.ModelLoader, opcache *services.OpCache) echo.HandlerFunc {
+func WelcomeEndpoint(ml *model.ModelLoader, opcache *services.OpCache) echo.HandlerFunc {
+	appConfig := ml.ApplicationConfig()
+	cl := ml.ConfigLoader()
 	return func(c echo.Context) error {
 		modelConfigs := cl.GetAllModelsConfigs()
 		galleryConfigs := map[string]*gallery.ModelConfig{}

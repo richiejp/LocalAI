@@ -21,7 +21,7 @@ import (
 // @Param request body schema.OpenAIRequest true "query params"
 // @Success 200 {object} schema.OpenAIResponse "Response"
 // @Router /v1/embeddings [post]
-func EmbeddingsEndpoint(cl *config.ModelConfigLoader, ml *model.ModelLoader, appConfig *config.ApplicationConfig) echo.HandlerFunc {
+func EmbeddingsEndpoint(ml *model.ModelLoader) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		input, ok := c.Get(middleware.CONTEXT_LOCALS_KEY_LOCALAI_REQUEST).(*schema.OpenAIRequest)
 		if !ok || input.Model == "" {
@@ -38,7 +38,7 @@ func EmbeddingsEndpoint(cl *config.ModelConfigLoader, ml *model.ModelLoader, app
 
 		for i, s := range config.InputToken {
 			// get the model function to call for the result
-			embedFn, err := backend.ModelEmbedding("", s, ml, *config, appConfig)
+			embedFn, err := backend.ModelEmbedding("", s, ml, *config)
 			if err != nil {
 				return err
 			}
@@ -52,7 +52,7 @@ func EmbeddingsEndpoint(cl *config.ModelConfigLoader, ml *model.ModelLoader, app
 
 		for i, s := range config.InputStrings {
 			// get the model function to call for the result
-			embedFn, err := backend.ModelEmbedding(s, []int{}, ml, *config, appConfig)
+			embedFn, err := backend.ModelEmbedding(s, []int{}, ml, *config)
 			if err != nil {
 				return err
 			}

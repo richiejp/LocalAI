@@ -30,7 +30,7 @@ var _ = Describe("InstallExternalBackend", func() {
 
 		systemState, err = system.GetSystemState(system.WithBackendPath(tempDir))
 		Expect(err).NotTo(HaveOccurred())
-		ml = model.NewModelLoader(systemState)
+		ml = model.NewModelLoader(systemState, nil)
 
 		// Setup test gallery
 		galleries = []config.Gallery{

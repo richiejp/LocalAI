@@ -33,7 +33,9 @@ const (
 )
 
 // RegisterUIAPIRoutes registers JSON API routes for the web UI
-func RegisterUIAPIRoutes(app *echo.Echo, cl *config.ModelConfigLoader, ml *model.ModelLoader, appConfig *config.ApplicationConfig, galleryService *services.GalleryService, opcache *services.OpCache, applicationInstance *application.Application) {
+func RegisterUIAPIRoutes(app *echo.Echo, ml *model.ModelLoader, galleryService *services.GalleryService, opcache *services.OpCache, applicationInstance *application.Application) {
+	cl := ml.ConfigLoader()
+	appConfig := ml.ApplicationConfig()
 
 	// Operations API - Get all current operations (models + backends)
 	app.GET("/api/operations", func(c echo.Context) error {

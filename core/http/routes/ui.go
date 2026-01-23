@@ -20,8 +20,8 @@ func RegisterUIRoutes(app *echo.Echo,
 	// keeps the state of ops that are started from the UI
 	var processingOps = services.NewOpCache(galleryService)
 
-	app.GET("/", localai.WelcomeEndpoint(appConfig, cl, ml, processingOps))
-	app.GET("/manage", localai.WelcomeEndpoint(appConfig, cl, ml, processingOps))
+	app.GET("/", localai.WelcomeEndpoint(ml, processingOps))
+	app.GET("/manage", localai.WelcomeEndpoint(ml, processingOps))
 
 	if !appConfig.DisableRuntimeSettings {
 		// Settings page

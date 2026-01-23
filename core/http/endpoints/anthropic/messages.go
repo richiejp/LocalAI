@@ -22,7 +22,7 @@ import (
 // @Param request body schema.AnthropicRequest true "query params"
 // @Success 200 {object} schema.AnthropicResponse "Response"
 // @Router /v1/messages [post]
-func MessagesEndpoint(cl *config.ModelConfigLoader, ml *model.ModelLoader, evaluator *templates.Evaluator, appConfig *config.ApplicationConfig) echo.HandlerFunc {
+func MessagesEndpoint(ml *model.ModelLoader, evaluator *templates.Evaluator) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		id := uuid.New().String()
 
@@ -102,7 +102,7 @@ func handleAnthropicNonStream(c echo.Context, id string, input *schema.Anthropic
 	}
 
 	predFunc, err := backend.ModelInference(
-		input.Context, predInput, openAIReq.Messages, images, nil, nil, ml, cfg, nil, nil, nil, "", "", nil, nil, nil)
+		input.Context, predInput, openAIReq.Messages, images, nil, nil, ml, *cfg, nil, "", "", nil, nil, nil)
 	if err != nil {
 		xlog.Error("Anthropic model inference failed", "error", err)
 		return sendAnthropicError(c, 500, "api_error", fmt.Sprintf("model inference failed: %v", err))
@@ -293,7 +293,7 @@ func handleAnthropicStream(c echo.Context, id string, input *schema.AnthropicReq
 	}
 
 	predFunc, err := backend.ModelInference(
-		input.Context, predInput, openAIMessages, images, nil, nil, ml, cfg, nil, nil, tokenCallback, "", "", nil, nil, nil)
+		input.Context, predInput, openAIMessages, images, nil, nil, ml, cfg, appConfig, tokenCallback, "", "", nil, nil, nil)
 	if err != nil {
 		xlog.Error("Anthropic stream model inference failed", "error", err)
 		return sendAnthropicError(c, 500, "api_error", fmt.Sprintf("model inference failed: %v", err))

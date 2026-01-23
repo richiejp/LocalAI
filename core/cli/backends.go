@@ -102,7 +102,7 @@ func (bi *BackendsInstall) Run(ctx *cliContext.Context) error {
 		}
 	}
 
-	modelLoader := model.NewModelLoader(systemState)
+	modelLoader := model.NewModelLoader(systemState, config.NewModelConfigLoader(systemState.Model.ModelsPath))
 	err = services.InstallExternalBackend(context.Background(), galleries, systemState, modelLoader, progressCallback, bi.BackendArgs, bi.Name, bi.Alias)
 	if err != nil {
 		return err

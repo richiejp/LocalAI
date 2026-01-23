@@ -16,7 +16,7 @@ import (
 // @Param		request	body		schema.VADRequest	true	"query params"
 // @Success 200 {object} proto.VADResponse "Response"
 // @Router		/vad [post]
-func VADEndpoint(cl *config.ModelConfigLoader, ml *model.ModelLoader, appConfig *config.ApplicationConfig) echo.HandlerFunc {
+func VADEndpoint(ml *model.ModelLoader) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		input, ok := c.Get(middleware.CONTEXT_LOCALS_KEY_LOCALAI_REQUEST).(*schema.VADRequest)
 		if !ok || input.Model == "" {
@@ -30,7 +30,7 @@ func VADEndpoint(cl *config.ModelConfigLoader, ml *model.ModelLoader, appConfig 
 
 		xlog.Debug("LocalAI VAD Request received", "model", input.Model)
 
-		resp, err := backend.VAD(input, c.Request().Context(), ml, appConfig, *cfg)
+		resp, err := backend.VAD(input, c.Request().Context(), ml, *cfg)
 
 		if err != nil {
 			return err

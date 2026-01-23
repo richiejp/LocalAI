@@ -17,7 +17,7 @@ import (
 // @Param request body schema.ElevenLabsSoundGenerationRequest true "query params"
 // @Success 200 {string} binary	 "Response"
 // @Router /v1/sound-generation [post]
-func SoundGenerationEndpoint(cl *config.ModelConfigLoader, ml *model.ModelLoader, appConfig *config.ApplicationConfig) echo.HandlerFunc {
+func SoundGenerationEndpoint(ml *model.ModelLoader) echo.HandlerFunc {
 	return func(c echo.Context) error {
 
 		input, ok := c.Get(middleware.CONTEXT_LOCALS_KEY_LOCALAI_REQUEST).(*schema.ElevenLabsSoundGenerationRequest)
@@ -33,7 +33,7 @@ func SoundGenerationEndpoint(cl *config.ModelConfigLoader, ml *model.ModelLoader
 		xlog.Debug("Sound Generation Request about to be sent to backend", "modelFile", "modelFile", "backend", cfg.Backend)
 
 		// TODO: Support uploading files?
-		filePath, _, err := backend.SoundGeneration(input.Text, input.Duration, input.Temperature, input.DoSample, nil, nil, ml, appConfig, *cfg)
+		filePath, _, err := backend.SoundGeneration(input.Text, input.Duration, input.Temperature, input.DoSample, nil, nil, ml, *cfg)
 		if err != nil {
 			return err
 		}

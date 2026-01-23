@@ -12,9 +12,9 @@ import (
 func Detection(
 	sourceFile string,
 	loader *model.ModelLoader,
-	appConfig *config.ApplicationConfig,
 	modelConfig config.ModelConfig,
 ) (*proto.DetectResponse, error) {
+	appConfig := loader.ApplicationConfig()
 	opts := ModelOptions(modelConfig, appConfig)
 	detectionModel, err := loader.Load(opts...)
 	if err != nil {

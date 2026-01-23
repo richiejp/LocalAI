@@ -27,9 +27,12 @@ type Application struct {
 }
 
 func newApplication(appConfig *config.ApplicationConfig) *Application {
+	backendLoader := config.NewModelConfigLoader(appConfig.SystemState.Model.ModelsPath)
+	ml := model.NewModelLoader(appConfig.SystemState, backendLoader)
+	ml.SetApplicationConfig(appConfig)
 	return &Application{
-		backendLoader:      config.NewModelConfigLoader(appConfig.SystemState.Model.ModelsPath),
-		modelLoader:        model.NewModelLoader(appConfig.SystemState),
+		backendLoader:      backendLoader,
+		modelLoader:        ml,
 		applicationConfig:  appConfig,
 		templatesEvaluator: templates.NewEvaluator(appConfig.SystemState.Model.ModelsPath),
 	}

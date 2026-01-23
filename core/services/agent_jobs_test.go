@@ -42,8 +42,8 @@ var _ = Describe("AgentJobService", func() {
 		appConfig.APIAddress = "127.0.0.1:8080"
 		appConfig.AgentJobRetentionDays = 30
 
-		modelLoader = model.NewModelLoader(systemState)
 		configLoader = config.NewModelConfigLoader(tempDir)
+		modelLoader = model.NewModelLoader(systemState, configLoader)
 		evaluator = templates.NewEvaluator(tempDir)
 
 		service = services.NewAgentJobService(

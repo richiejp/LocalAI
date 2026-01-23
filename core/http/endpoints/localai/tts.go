@@ -24,7 +24,7 @@ import (
 //		@Success	200		{string}	binary				"generated audio/wav file"
 //		@Router		/v1/audio/speech [post]
 //		@Router		/tts [post]
-func TTSEndpoint(cl *config.ModelConfigLoader, ml *model.ModelLoader, appConfig *config.ApplicationConfig) echo.HandlerFunc {
+func TTSEndpoint(ml *model.ModelLoader) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		input, ok := c.Get(middleware.CONTEXT_LOCALS_KEY_LOCALAI_REQUEST).(*schema.TTSRequest)
 		if !ok || input.Model == "" {
@@ -50,7 +50,7 @@ func TTSEndpoint(cl *config.ModelConfigLoader, ml *model.ModelLoader, appConfig 
 			cfg.Voice = input.Voice
 		}
 
-		filePath, _, err := backend.ModelTTS(input.Input, cfg.Voice, cfg.Language, ml, appConfig, *cfg)
+		filePath, _, err := backend.ModelTTS(input.Input, cfg.Voice, cfg.Language, ml, *cfg)
 		if err != nil {
 			return err
 		}

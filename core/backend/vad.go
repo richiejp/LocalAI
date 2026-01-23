@@ -12,8 +12,8 @@ import (
 func VAD(request *schema.VADRequest,
 	ctx context.Context,
 	ml *model.ModelLoader,
-	appConfig *config.ApplicationConfig,
 	modelConfig config.ModelConfig) (*schema.VADResponse, error) {
+	appConfig := ml.ApplicationConfig()
 	opts := ModelOptions(modelConfig, appConfig)
 	vadModel, err := ml.Load(opts...)
 	if err != nil {

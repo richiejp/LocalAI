@@ -16,7 +16,7 @@ import (
 // @Param request body schema.DetectionRequest true "query params"
 // @Success 200 {object} schema.DetectionResponse "Response"
 // @Router /v1/detection [post]
-func DetectionEndpoint(cl *config.ModelConfigLoader, ml *model.ModelLoader, appConfig *config.ApplicationConfig) echo.HandlerFunc {
+func DetectionEndpoint(ml *model.ModelLoader) echo.HandlerFunc {
 	return func(c echo.Context) error {
 
 		input, ok := c.Get(middleware.CONTEXT_LOCALS_KEY_LOCALAI_REQUEST).(*schema.DetectionRequest)
@@ -36,7 +36,7 @@ func DetectionEndpoint(cl *config.ModelConfigLoader, ml *model.ModelLoader, appC
 			return err
 		}
 
-		res, err := backend.Detection(image, ml, appConfig, *cfg)
+		res, err := backend.Detection(image, ml, *cfg)
 		if err != nil {
 			return err
 		}

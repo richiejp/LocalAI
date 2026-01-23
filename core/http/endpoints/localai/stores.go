@@ -9,7 +9,7 @@ import (
 	"github.com/mudler/LocalAI/pkg/store"
 )
 
-func StoresSetEndpoint(sl *model.ModelLoader, appConfig *config.ApplicationConfig) echo.HandlerFunc {
+func StoresSetEndpoint(sl *model.ModelLoader) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		input := new(schema.StoresSet)
 
@@ -36,7 +36,7 @@ func StoresSetEndpoint(sl *model.ModelLoader, appConfig *config.ApplicationConfi
 	}
 }
 
-func StoresDeleteEndpoint(sl *model.ModelLoader, appConfig *config.ApplicationConfig) echo.HandlerFunc {
+func StoresDeleteEndpoint(sl *model.ModelLoader) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		input := new(schema.StoresDelete)
 
@@ -57,7 +57,7 @@ func StoresDeleteEndpoint(sl *model.ModelLoader, appConfig *config.ApplicationCo
 	}
 }
 
-func StoresGetEndpoint(sl *model.ModelLoader, appConfig *config.ApplicationConfig) echo.HandlerFunc {
+func StoresGetEndpoint(sl *model.ModelLoader) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		input := new(schema.StoresGet)
 
@@ -88,7 +88,7 @@ func StoresGetEndpoint(sl *model.ModelLoader, appConfig *config.ApplicationConfi
 	}
 }
 
-func StoresFindEndpoint(sl *model.ModelLoader, appConfig *config.ApplicationConfig) echo.HandlerFunc {
+func StoresFindEndpoint(sl *model.ModelLoader) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		input := new(schema.StoresFind)
 

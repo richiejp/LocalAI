@@ -23,7 +23,7 @@ func RegisterOpenAIRoutes(app *echo.Echo,
 	app.POST("/v1/realtime/transcription_session", openai.RealtimeTranscriptionSession(application), traceMiddleware)
 
 	// chat
-	chatHandler := openai.ChatEndpoint(application.ModelConfigLoader(), application.ModelLoader(), application.TemplatesEvaluator(), application.ApplicationConfig())
+	chatHandler := openai.ChatEndpoint(application.ModelLoader(), application.TemplatesEvaluator())
 	chatMiddleware := []echo.MiddlewareFunc{
 		traceMiddleware,
 		re.BuildFilteredFirstAvailableDefaultModel(config.BuildUsecaseFilterFn(config.FLAG_CHAT)),
@@ -41,7 +41,7 @@ func RegisterOpenAIRoutes(app *echo.Echo,
 	app.POST("/chat/completions", chatHandler, chatMiddleware...)
 
 	// edit
-	editHandler := openai.EditEndpoint(application.ModelConfigLoader(), application.ModelLoader(), application.TemplatesEvaluator(), application.ApplicationConfig())
+	editHandler := openai.EditEndpoint(application.ModelLoader(), application.TemplatesEvaluator())
 	editMiddleware := []echo.MiddlewareFunc{
 		traceMiddleware,
 		re.BuildFilteredFirstAvailableDefaultModel(config.BuildUsecaseFilterFn(config.FLAG_EDIT)),
@@ -60,7 +60,7 @@ func RegisterOpenAIRoutes(app *echo.Echo,
 	app.POST("/edits", editHandler, editMiddleware...)
 
 	// completion
-	completionHandler := openai.CompletionEndpoint(application.ModelConfigLoader(), application.ModelLoader(), application.TemplatesEvaluator(), application.ApplicationConfig())
+	completionHandler := openai.CompletionEndpoint(application.ModelLoader(), application.TemplatesEvaluator())
 	completionMiddleware := []echo.MiddlewareFunc{
 		traceMiddleware,
 		re.BuildFilteredFirstAvailableDefaultModel(config.BuildUsecaseFilterFn(config.FLAG_COMPLETION)),
@@ -80,7 +80,7 @@ func RegisterOpenAIRoutes(app *echo.Echo,
 	app.POST("/v1/engines/:model/completions", completionHandler, completionMiddleware...)
 
 	// embeddings
-	embeddingHandler := openai.EmbeddingsEndpoint(application.ModelConfigLoader(), application.ModelLoader(), application.ApplicationConfig())
+	embeddingHandler := openai.EmbeddingsEndpoint(application.ModelLoader())
 	embeddingMiddleware := []echo.MiddlewareFunc{
 		traceMiddleware,
 		re.BuildFilteredFirstAvailableDefaultModel(config.BuildUsecaseFilterFn(config.FLAG_EMBEDDINGS)),
@@ -99,7 +99,7 @@ func RegisterOpenAIRoutes(app *echo.Echo,
 	app.POST("/embeddings", embeddingHandler, embeddingMiddleware...)
 	app.POST("/v1/engines/:model/embeddings", embeddingHandler, embeddingMiddleware...)
 
-	audioHandler := openai.TranscriptEndpoint(application.ModelConfigLoader(), application.ModelLoader(), application.ApplicationConfig())
+	audioHandler := openai.TranscriptEndpoint(application.ModelLoader())
 	audioMiddleware := []echo.MiddlewareFunc{
 		traceMiddleware,
 		re.BuildFilteredFirstAvailableDefaultModel(config.BuildUsecaseFilterFn(config.FLAG_TRANSCRIPT)),
@@ -117,7 +117,7 @@ func RegisterOpenAIRoutes(app *echo.Echo,
 	app.POST("/v1/audio/transcriptions", audioHandler, audioMiddleware...)
 	app.POST("/audio/transcriptions", audioHandler, audioMiddleware...)
 
-	audioSpeechHandler := localai.TTSEndpoint(application.ModelConfigLoader(), application.ModelLoader(), application.ApplicationConfig())
+	audioSpeechHandler := localai.TTSEndpoint(application.ModelLoader())
 	audioSpeechMiddleware := []echo.MiddlewareFunc{
 		traceMiddleware,
 		re.BuildFilteredFirstAvailableDefaultModel(config.BuildUsecaseFilterFn(config.FLAG_TTS)),
@@ -128,7 +128,7 @@ func RegisterOpenAIRoutes(app *echo.Echo,
 	app.POST("/audio/speech", audioSpeechHandler, audioSpeechMiddleware...)
 
 	// images
-	imageHandler := openai.ImageEndpoint(application.ModelConfigLoader(), application.ModelLoader(), application.ApplicationConfig())
+	imageHandler := openai.ImageEndpoint(application.ModelLoader())
 	imageMiddleware := []echo.MiddlewareFunc{
 		traceMiddleware,
 		// Default: use the first available image generation model
@@ -148,12 +148,12 @@ func RegisterOpenAIRoutes(app *echo.Echo,
 	app.POST("/images/generations", imageHandler, imageMiddleware...)
 
 	// inpainting endpoint (image + mask) - reuse same middleware config as images
-	inpaintingHandler := openai.InpaintingEndpoint(application.ModelConfigLoader(), application.ModelLoader(), application.ApplicationConfig())
+	inpaintingHandler := openai.InpaintingEndpoint(application.ModelLoader())
 	app.POST("/v1/images/inpainting", inpaintingHandler, imageMiddleware...)
 	app.POST("/images/inpainting", inpaintingHandler, imageMiddleware...)
 
 	// videos (OpenAI-compatible endpoints mapped to LocalAI video handler)
-	videoHandler := openai.VideoEndpoint(application.ModelConfigLoader(), application.ModelLoader(), application.ApplicationConfig())
+	videoHandler := openai.VideoEndpoint(application.ModelLoader())
 	videoMiddleware := []echo.MiddlewareFunc{
 		traceMiddleware,
 		re.BuildFilteredFirstAvailableDefaultModel(config.BuildUsecaseFilterFn(config.FLAG_VIDEO)),
@@ -174,6 +174,6 @@ func RegisterOpenAIRoutes(app *echo.Echo,
 	app.POST("/videos", videoHandler, videoMiddleware...)
 
 	// List models
-	app.GET("/v1/models", openai.ListModelsEndpoint(application.ModelConfigLoader(), application.ModelLoader(), application.ApplicationConfig()))
-	app.GET("/models", openai.ListModelsEndpoint(application.ModelConfigLoader(), application.ModelLoader(), application.ApplicationConfig()))
+	app.GET("/v1/models", openai.ListModelsEndpoint(application.ModelLoader()))
+	app.GET("/models", openai.ListModelsEndpoint(application.ModelLoader()))
 }

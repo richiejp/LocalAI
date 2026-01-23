@@ -55,8 +55,8 @@ var _ = Describe("Backend API Routes", func() {
 		err = os.MkdirAll(systemState.Model.ModelsPath, 0750)
 		Expect(err).NotTo(HaveOccurred())
 
-		modelLoader = model.NewModelLoader(systemState)
 		configLoader = config.NewModelConfigLoader(tempDir)
+		modelLoader = model.NewModelLoader(systemState, configLoader)
 
 		appConfig = config.NewApplicationConfig(
 			config.WithContext(context.Background()),

@@ -14,7 +14,7 @@ import (
 	model "github.com/mudler/LocalAI/pkg/model"
 )
 
-func VideoEndpoint(cl *config.ModelConfigLoader, ml *model.ModelLoader, appConfig *config.ApplicationConfig) echo.HandlerFunc {
+func VideoEndpoint(ml *model.ModelLoader) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		input, ok := c.Get(middleware.CONTEXT_LOCALS_KEY_LOCALAI_REQUEST).(*schema.OpenAIRequest)
 		if !ok || input == nil {
@@ -33,7 +33,7 @@ func VideoEndpoint(cl *config.ModelConfigLoader, ml *model.ModelLoader, appConfi
 		// Place VideoRequest into context so localai.VideoEndpoint can consume it
 		c.Set(middleware.CONTEXT_LOCALS_KEY_LOCALAI_REQUEST, vr)
 		// Delegate to existing localai handler
-		return localai.VideoEndpoint(cl, ml, appConfig)(c)
+		return localai.VideoEndpoint(ml)(c)
 	}
 }
 

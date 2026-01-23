@@ -23,8 +23,9 @@ import (
 )
 
 // ImportModelURIEndpoint handles creating new model configurations from a URI
-func ImportModelURIEndpoint(cl *config.ModelConfigLoader, appConfig *config.ApplicationConfig, galleryService *services.GalleryService, opcache *services.OpCache) echo.HandlerFunc {
+func ImportModelURIEndpoint(ml *model.ModelLoader, galleryService *services.GalleryService, opcache *services.OpCache) echo.HandlerFunc {
 	return func(c echo.Context) error {
+		appConfig := ml.ApplicationConfig()
 
 		input := new(schema.ImportModelRequest)
 
@@ -60,7 +61,7 @@ func ImportModelURIEndpoint(cl *config.ModelConfigLoader, appConfig *config.Appl
 			ID:                 uuid.String(),
 			GalleryElementName: galleryID,
 			GalleryElement:     &modelConfig,
-			BackendGalleries:   appConfig.BackendGalleries,
+			BackendGalleries:   ml.ApplicationConfig().BackendGalleries,
 		}
 
 		return c.JSON(200, schema.GalleryResponse{
@@ -71,8 +72,11 @@ func ImportModelURIEndpoint(cl *config.ModelConfigLoader, appConfig *config.Appl
 }
 
 // ImportModelEndpoint handles creating new model configurations
-func ImportModelEndpoint(cl *config.ModelConfigLoader, appConfig *config.ApplicationConfig) echo.HandlerFunc {
+func ImportModelEndpoint(ml *model.ModelLoader) echo.HandlerFunc {
 	return func(c echo.Context) error {
+		cl := ml.ConfigLoader()
+		appConfig := ml.ApplicationConfig()
+
 		// Get the raw body
 		body, err := io.ReadAll(c.Request().Body)
 		if err != nil {

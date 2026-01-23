@@ -3,6 +3,7 @@ package model
 import (
 	"context"
 
+	"github.com/mudler/LocalAI/core/config"
 	pb "github.com/mudler/LocalAI/pkg/grpc/proto"
 )
 
@@ -19,6 +20,10 @@ type Options struct {
 	grpcAttempts      int
 	grpcAttemptsDelay int
 	parallelRequests  bool
+
+	modelConfig       *config.ModelConfig
+	appConfig         *config.ApplicationConfig
+	modelConfigLoader *config.ModelConfigLoader
 }
 
 type Option func(*Options)
@@ -83,6 +88,24 @@ func WithContext(ctx context.Context) Option {
 func WithModelID(id string) Option {
 	return func(o *Options) {
 		o.modelID = id
+	}
+}
+
+func WithModelConfig(c config.ModelConfig) Option {
+	return func(o *Options) {
+		o.modelConfig = &c
+	}
+}
+
+func WithApplicationConfig(c *config.ApplicationConfig) Option {
+	return func(o *Options) {
+		o.appConfig = c
+	}
+}
+
+func WithModelConfigLoader(c *config.ModelConfigLoader) Option {
+	return func(o *Options) {
+		o.modelConfigLoader = c
 	}
 }
 

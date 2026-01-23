@@ -59,10 +59,10 @@ func RegisterLocalAIRoutes(router *echo.Echo,
 		router.GET("/backends/galleries", backendGalleryEndpointService.ListBackendGalleriesEndpoint())
 		router.GET("/backends/jobs/:uuid", backendGalleryEndpointService.GetOpStatusEndpoint())
 		// Custom model import endpoint
-		router.POST("/models/import", localai.ImportModelEndpoint(cl, appConfig))
+		router.POST("/models/import", localai.ImportModelEndpoint(ml))
 
 		// URI model import endpoint
-		router.POST("/models/import-uri", localai.ImportModelURIEndpoint(cl, appConfig, galleryService, opcache))
+		router.POST("/models/import-uri", localai.ImportModelURIEndpoint(ml, galleryService, opcache))
 
 		// Custom model edit endpoint
 		router.POST("/models/edit/:name", localai.EditModelEndpoint(cl, appConfig))
@@ -71,19 +71,19 @@ func RegisterLocalAIRoutes(router *echo.Echo,
 		router.POST("/models/reload", localai.ReloadModelsEndpoint(cl, appConfig))
 	}
 
-	detectionHandler := localai.DetectionEndpoint(cl, ml, appConfig)
+	detectionHandler := localai.DetectionEndpoint(ml)
 	router.POST("/v1/detection",
 		detectionHandler,
 		requestExtractor.BuildFilteredFirstAvailableDefaultModel(config.BuildUsecaseFilterFn(config.FLAG_DETECTION)),
 		requestExtractor.SetModelAndConfig(func() schema.LocalAIRequest { return new(schema.DetectionRequest) }))
 
-	ttsHandler := localai.TTSEndpoint(cl, ml, appConfig)
+	ttsHandler := localai.TTSEndpoint(ml)
 	router.POST("/tts",
 		ttsHandler,
 		requestExtractor.BuildFilteredFirstAvailableDefaultModel(config.BuildUsecaseFilterFn(config.FLAG_TTS)),
 		requestExtractor.SetModelAndConfig(func() schema.LocalAIRequest { return new(schema.TTSRequest) }))
 
-	vadHandler := localai.VADEndpoint(cl, ml, appConfig)
+	vadHandler := localai.VADEndpoint(ml)
 	router.POST("/vad",
 		vadHandler,
 		requestExtractor.BuildFilteredFirstAvailableDefaultModel(config.BuildUsecaseFilterFn(config.FLAG_VAD)),
@@ -94,16 +94,16 @@ func RegisterLocalAIRoutes(router *echo.Echo,
 		requestExtractor.SetModelAndConfig(func() schema.LocalAIRequest { return new(schema.VADRequest) }))
 
 	// Stores
-	router.POST("/stores/set", localai.StoresSetEndpoint(ml, appConfig))
-	router.POST("/stores/delete", localai.StoresDeleteEndpoint(ml, appConfig))
-	router.POST("/stores/get", localai.StoresGetEndpoint(ml, appConfig))
-	router.POST("/stores/find", localai.StoresFindEndpoint(ml, appConfig))
+	router.POST("/stores/set", localai.StoresSetEndpoint(ml))
+	router.POST("/stores/delete", localai.StoresDeleteEndpoint(ml))
+	router.POST("/stores/get", localai.StoresGetEndpoint(ml))
+	router.POST("/stores/find", localai.StoresFindEndpoint(ml))
 
 	if !appConfig.DisableMetrics {
 		router.GET("/metrics", localai.LocalAIMetricsEndpoint())
 	}
 
-	videoHandler := localai.VideoEndpoint(cl, ml, appConfig)
+	videoHandler := localai.VideoEndpoint(ml)
 	router.POST("/video",
 		videoHandler,
 		requestExtractor.BuildFilteredFirstAvailableDefaultModel(config.BuildUsecaseFilterFn(config.FLAG_VIDEO)),
@@ -111,7 +111,7 @@ func RegisterLocalAIRoutes(router *echo.Echo,
 
 	// Backend Statistics Module
 	// TODO: Should these use standard middlewares? Refactor later, they are extremely simple.
-	backendMonitorService := services.NewBackendMonitorService(ml, cl, appConfig) // Split out for now
+	backendMonitorService := services.NewBackendMonitorService(ml) // Split out for now
 	router.GET("/backend/monitor", localai.BackendMonitorEndpoint(backendMonitorService))
 	router.POST("/backend/shutdown", localai.BackendShutdownEndpoint(backendMonitorService))
 	// The v1/* urls are exactly the same as above - makes local e2e testing easier if they are registered.
@@ -140,7 +140,7 @@ func RegisterLocalAIRoutes(router *echo.Echo,
 	// MCP endpoint - supports both streaming and non-streaming modes
 	// Note: streaming mode is NOT compatible with the OpenAI apis. We have a set which streams more states.
 	if evaluator != nil {
-		mcpStreamHandler := localai.MCPEndpoint(cl, ml, evaluator, appConfig)
+		mcpStreamHandler := localai.MCPEndpoint(ml, evaluator)
 		mcpStreamMiddleware := []echo.MiddlewareFunc{
 			requestExtractor.BuildFilteredFirstAvailableDefaultModel(config.BuildUsecaseFilterFn(config.FLAG_CHAT)),
 			requestExtractor.SetModelAndConfig(func() schema.LocalAIRequest { return new(schema.OpenAIRequest) }),

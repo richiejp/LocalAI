@@ -14,8 +14,6 @@ func ComputeChoices(
 	req *schema.OpenAIRequest,
 	predInput string,
 	config *config.ModelConfig,
-	bcl *config.ModelConfigLoader,
-	o *config.ApplicationConfig,
 	loader *model.ModelLoader,
 	cb func(string, *[]schema.Choice),
 	tokenCallback func(string, backend.TokenUsage) bool) ([]schema.Choice, backend.TokenUsage, error) {
@@ -82,7 +80,7 @@ func ComputeChoices(
 
 	// get the model function to call for the result
 	predFunc, err := backend.ModelInference(
-		req.Context, predInput, req.Messages, images, videos, audios, loader, config, bcl, o, tokenCallback, toolsJSON, toolChoiceJSON, logprobs, topLogprobs, logitBias)
+		req.Context, predInput, req.Messages, images, videos, audios, loader, config, tokenCallback, toolsJSON, toolChoiceJSON, logprobs, topLogprobs, logitBias)
 	if err != nil {
 		return result, backend.TokenUsage{}, err
 	}

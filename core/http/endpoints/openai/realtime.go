@@ -15,19 +15,17 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/labstack/echo/v4"
 	"github.com/mudler/LocalAI/core/application"
-
+	"github.com/mudler/LocalAI/core/backend"
 	"github.com/mudler/LocalAI/core/config"
 	"github.com/mudler/LocalAI/core/http/endpoints/openai/types"
 	"github.com/mudler/LocalAI/core/schema"
 	"github.com/mudler/LocalAI/core/templates"
 	laudio "github.com/mudler/LocalAI/pkg/audio"
 	"github.com/mudler/LocalAI/pkg/functions"
+	grpcClient "github.com/mudler/LocalAI/pkg/grpc"
 	"github.com/mudler/LocalAI/pkg/grpc/proto"
 	model "github.com/mudler/LocalAI/pkg/model"
 	"github.com/mudler/LocalAI/pkg/sound"
-
-	"google.golang.org/grpc"
-
 	"github.com/mudler/xlog"
 )
 
@@ -55,7 +53,7 @@ type Session struct {
 	AudioBufferLock         sync.Mutex
 	Instructions            string
 	DefaultConversationID   string
-	ModelInterface          Model
+	ModelInterface          grpcClient.Backend
 	// The pipeline model config or the config for an any-to-any model
 	ModelConfig             *config.ModelConfig
 }
@@ -115,14 +113,6 @@ func (c *Conversation) ToServer() types.Conversation {
 var sessions = make(map[string]*Session)
 var sessionLock sync.Mutex
 
-type Model interface {
-	VAD(ctx context.Context, in *proto.VADRequest, opts ...grpc.CallOption) (*proto.VADResponse, error)
-	Transcribe(ctx context.Context, in *proto.TranscriptRequest, opts ...grpc.CallOption) (*proto.TranscriptResult, error)
-	Predict(ctx context.Context, in *proto.PredictOptions, opts ...grpc.CallOption) (*proto.Reply, error)
-	PredictStream(ctx context.Context, in *proto.PredictOptions, f func(*proto.Reply), opts ...grpc.CallOption) error
-	TTS(ctx context.Context, in *proto.TTSRequest, opts ...grpc.CallOption) (*proto.Result, string, error)
-}
-
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool {
 		return true // Allow all origins
@@ -151,22 +141,22 @@ func Realtime(application *application.Application) echo.HandlerFunc {
 		defer ws.Close()
 
 		// Extract query parameters from Echo context before passing to websocket handler
-		model := c.QueryParam("model")
+		modelName := c.QueryParam("model")
 
-		registerRealtime(application, model)(ws)
+		registerRealtime(application, modelName)(ws)
 		return nil
 	}
 }
 
-func registerRealtime(application *application.Application, model string) func(c *websocket.Conn) {
+func registerRealtime(application *application.Application, modelName string) func(c *websocket.Conn) {
 	return func(c *websocket.Conn) {
 
 		evaluator := application.TemplatesEvaluator()
-		xlog.Debug("Realtime WebSocket connection established", "address", c.RemoteAddr().String(), "model", model)
+		xlog.Debug("Realtime WebSocket connection established", "address", c.RemoteAddr().String(), "model", modelName)
 
 		// TODO: Allow any-to-any model to be specified
 		cl := application.ModelConfigLoader()
-		cfg, err := cl.LoadModelConfigFileByNameDefaultOptions(model, application.ApplicationConfig())
+		cfg, err := cl.LoadModelConfigFileByNameDefaultOptions(modelName, application.ApplicationConfig())
 		if err != nil {
 			xlog.Error("failed to load model config", "error", err)
 			sendError(c, "model_load_error", "Failed to load model config", "", "")
@@ -174,7 +164,7 @@ func registerRealtime(application *application.Application, model string) func(c
 		}
 
 		if cfg == nil || (cfg.Pipeline.VAD == "" && cfg.Pipeline.Transcription == "" && cfg.Pipeline.TTS == "" && cfg.Pipeline.LLM == "") {
-			xlog.Error("model is not a pipeline", "model", model)
+			xlog.Error("model is not a pipeline", "model", modelName)
 			sendError(c, "invalid_model", "Model is not a pipeline model", "", "")
 			return
 		}
@@ -186,7 +176,7 @@ func registerRealtime(application *application.Application, model string) func(c
 		session := &Session{
 			ID:                sessionID,
 			TranscriptionOnly: false,
-			Model:             model,
+			Model:             modelName,
 			Voice:             ttsModel,
 			ModelConfig:       cfg,
 			TurnDetection: &types.TurnDetectionUnion{
@@ -214,12 +204,10 @@ func registerRealtime(application *application.Application, model string) func(c
 		session.Conversations[conversationID] = conversation
 		session.DefaultConversationID = conversationID
 
-		m, err := newModel(
-			&cfg.Pipeline,
-			application.ModelConfigLoader(),
-			application.ModelLoader(),
-			application.ApplicationConfig(),
-		)
+		opts := backend.ModelOptions(*cfg, application.ApplicationConfig())
+		opts = append(opts, model.WithModelConfigLoader(application.ModelConfigLoader()))
+
+		m, err := application.ModelLoader().Load(opts...)
 		if err != nil {
 			xlog.Error("failed to load model", "error", err)
 			sendError(c, "model_load_error", "Failed to load model", "", "")
@@ -253,7 +241,7 @@ func registerRealtime(application *application.Application, model string) func(c
 				go func() {
 					defer wg.Done()
 					conversation := session.Conversations[session.DefaultConversationID]
-					handleVAD(evaluator, session, conversation, c, done)
+					handleVAD(evaluator, session, conversation, c, done, application)
 				}()
 				vadServerStarted = true
 			} else if session.TurnDetection.ServerVad == nil && vadServerStarted {
@@ -374,7 +362,7 @@ func registerRealtime(application *application.Application, model string) func(c
 				session.InputAudioBuffer = nil
 				session.AudioBufferLock.Unlock()
 
-				go commitUtterance(context.TODO(), allAudio, evaluator, session, conversation, c)
+				go commitUtterance(context.TODO(), allAudio, evaluator, session, conversation, c, application)
 
 			case types.ConversationItemCreateEvent:
 				xlog.Debug("recv", "message", string(msg))
@@ -507,7 +495,7 @@ func updateTransSession(session *Session, update *types.SessionUnion, cl *config
 			return fmt.Errorf("model is not a valid pipeline model: %s", trUpd.Model)
 		}
 
-		m, cfg, err := newTranscriptionOnlyModel(&cfg.Pipeline, cl, ml, appConfig)
+		m, err := ml.Load(append(backend.ModelOptions(*cfg, appConfig), model.WithModelConfigLoader(cl))...)
 		if err != nil {
 			return err
 		}
@@ -567,7 +555,7 @@ func updateSession(session *Session, update *types.SessionUnion, cl *config.Mode
 	}
 
 	if rt.Model != "" || (rt.Audio != nil && rt.Audio.Output != nil && rt.Audio.Output.Voice != "") || (rt.Audio != nil && rt.Audio.Input != nil && rt.Audio.Input.Transcription != nil) {
-		m, err := newModel(&session.ModelConfig.Pipeline, cl, ml, appConfig)
+		m, err := ml.Load(append(backend.ModelOptions(*session.ModelConfig, appConfig), model.WithModelConfigLoader(cl))...)
 		if err != nil {
 			return err
 		}
@@ -587,7 +575,7 @@ func updateSession(session *Session, update *types.SessionUnion, cl *config.Mode
 
 // handleVAD is a goroutine that listens for audio data from the client,
 // runs VAD on the audio data, and commits utterances to the conversation
-func handleVAD(evaluator *templates.Evaluator, session *Session, conv *Conversation, c *websocket.Conn, done chan struct{}) {
+func handleVAD(evaluator *templates.Evaluator, session *Session, conv *Conversation, c *websocket.Conn, done chan struct{}, app *application.Application) {
 	vadContext, cancel := context.WithCancel(context.Background())
 	go func() {
 		<-done
@@ -695,13 +683,13 @@ func handleVAD(evaluator *templates.Evaluator, session *Session, conv *Conversat
 
 				abytes := sound.Int16toBytesLE(aints)
 				// TODO: Remove prefix silence that is is over TurnDetectionParams.PrefixPaddingMs
-				go commitUtterance(vadContext, abytes, evaluator, session, conv, c)
+				go commitUtterance(vadContext, abytes, evaluator, session, conv, c, app)
 			}
 		}
 	}
 }
 
-func commitUtterance(ctx context.Context, utt []byte, evaluator *templates.Evaluator, session *Session, conv *Conversation, c *websocket.Conn) {
+func commitUtterance(ctx context.Context, utt []byte, evaluator *templates.Evaluator, session *Session, conv *Conversation, c *websocket.Conn, app *application.Application) {
 	if len(utt) == 0 {
 		return
 	}
@@ -731,18 +719,13 @@ func commitUtterance(ctx context.Context, utt []byte, evaluator *templates.Evalu
 	// TODO: If we have a real any-to-any model then transcription is optional
 	var transcript string
 	if session.InputAudioTranscription != nil {
-		tr, err := session.ModelInterface.Transcribe(ctx, &proto.TranscriptRequest{
-			Dst:       f.Name(),
-			Language:  session.InputAudioTranscription.Language,
-			Translate: false,
-			Threads:   uint32(*session.ModelConfig.Threads),
-			Prompt:    session.InputAudioTranscription.Prompt,
-		})
+		tr, err := backend.ModelTranscription(f.Name(), session.InputAudioTranscription.Language, false, false, session.InputAudioTranscription.Prompt, app.ModelLoader(), *session.ModelConfig)
 		if err != nil {
 			sendError(c, "transcription_failed", err.Error(), "", "event_TODO")
+			return
 		}
 
-		transcript = tr.GetText()
+		transcript = tr.Text
 		sendEvent(c, types.ConversationItemInputAudioTranscriptionCompletedEvent{
 			ServerEventBase: types.ServerEventBase{
 				EventID: "event_TODO",
@@ -760,7 +743,7 @@ func commitUtterance(ctx context.Context, utt []byte, evaluator *templates.Evalu
 	}
 
 	if !session.TranscriptionOnly {
-		generateResponse(session.ModelConfig, evaluator, session, utt, transcript, conv, ResponseCreate{}, c, websocket.TextMessage)
+		generateResponse(session.ModelConfig, evaluator, session, utt, transcript, conv, ResponseCreate{}, c, websocket.TextMessage, app)
 	}
 }
 
@@ -785,7 +768,7 @@ func runVAD(ctx context.Context, session *Session, adata []int16) ([]*proto.VADS
 }
 
 // Function to generate a response based on the conversation
-func generateResponse(config *config.ModelConfig, evaluator *templates.Evaluator, session *Session, utt []byte, transcript string, conv *Conversation, responseCreate ResponseCreate, c *websocket.Conn, mt int) {
+func generateResponse(config *config.ModelConfig, evaluator *templates.Evaluator, session *Session, utt []byte, transcript string, conv *Conversation, responseCreate ResponseCreate, c *websocket.Conn, mt int, app *application.Application) {
 	xlog.Debug("Generating realtime response...")
 
 	item := types.MessageItemUnion{
@@ -882,40 +865,19 @@ func generateResponse(config *config.ModelConfig, evaluator *templates.Evaluator
 	conv.Lock.Unlock()
 	// XXX: And from now item must be accessed with conv.Lock held
 
-	input := schema.OpenAIRequest{
-		Messages: conversationHistory,
-	}
-
-	// TODO: This logic is shared with llm.go and the chat API. We probably want to refactor it
-	var protoMessages []*proto.Message
-	var predInput string
-	if !config.TemplateConfig.UseTokenizerTemplate {
-		predInput = evaluator.TemplateMessages(input, input.Messages, config, []functions.Function{}, false)
-
-		xlog.Debug("Prompt (after templating)", "prompt", predInput)
-		if config.Grammar != "" {
-			xlog.Debug("Grammar", "grammar", config.Grammar)
-		}
-
-		protoMessages = conversationHistory.ToProto()
-	}
-
-	opts := proto.PredictOptions{}
-	opts.Prompt = predInput
-	opts.Messages = protoMessages
-	opts.UseTokenizerTemplate = config.TemplateConfig.UseTokenizerTemplate
-
-	// TODO: We can use the PredictStream method, but then can we stream the results of that to TTS?
-	reply, err := session.ModelInterface.Predict(context.TODO(), &opts)
+	inference, err := backend.ModelInference(context.Background(), "", conversationHistory, nil, nil, nil, app.ModelLoader(), config, nil, "", "", nil, nil, nil)
 	if err != nil {
 		sendError(c, "inference_failed", fmt.Sprintf("backend error: %v", err), "", item.Assistant.ID)
 		return
 	}
 
-	response := string(reply.Message)
-	if config.TemplateConfig.ReplyPrefix != "" {
-		response = config.TemplateConfig.ReplyPrefix + response
+	reply, err := inference()
+	if err != nil {
+		sendError(c, "inference_failed", fmt.Sprintf("backend error: %v", err), "", item.Assistant.ID)
+		return
 	}
+
+	response := reply.Response
 
 	conv.Lock.Lock()
 	item.Assistant.Status = types.ItemStatusCompleted
@@ -927,12 +889,7 @@ func generateResponse(config *config.ModelConfig, evaluator *templates.Evaluator
 	}
 	conv.Lock.Unlock()
 
-	ttsReq := &proto.TTSRequest{
-		Text:  response,
-		Voice: session.Voice,
-	}
-
-	res, audioFilePath, err := session.ModelInterface.TTS(context.TODO(), ttsReq)
+	audioFilePath, res, err := backend.ModelTTS(response, session.Voice, "", app.ModelLoader(), *session.ModelConfig)
 	if err != nil {
 		xlog.Error("TTS failed", "error", err)
 		sendError(c, "tts_error", fmt.Sprintf("TTS generation failed: %v", err), "", item.Assistant.ID)

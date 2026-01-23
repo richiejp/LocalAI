@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/mudler/LocalAI/core/config"
 	"github.com/mudler/LocalAI/core/schema"
 	"github.com/mudler/LocalAI/pkg/grpc/proto"
 	"github.com/mudler/LocalAI/pkg/model"
@@ -16,21 +15,17 @@ import (
 )
 
 type BackendMonitorService struct {
-	modelConfigLoader *config.ModelConfigLoader
-	modelLoader       *model.ModelLoader
-	options           *config.ApplicationConfig // Taking options in case we need to inspect ExternalGRPCBackends, though that's out of scope for now, hence the name.
+	modelLoader *model.ModelLoader
 }
 
-func NewBackendMonitorService(modelLoader *model.ModelLoader, configLoader *config.ModelConfigLoader, appConfig *config.ApplicationConfig) *BackendMonitorService {
+func NewBackendMonitorService(modelLoader *model.ModelLoader) *BackendMonitorService {
 	return &BackendMonitorService{
-		modelLoader:       modelLoader,
-		modelConfigLoader: configLoader,
-		options:           appConfig,
+		modelLoader: modelLoader,
 	}
 }
 
 func (bms *BackendMonitorService) SampleLocalBackendProcess(model string) (*schema.BackendMonitorResponse, error) {
-	config, exists := bms.modelConfigLoader.GetModelConfig(model)
+	config, exists := bms.modelLoader.ConfigLoader().GetModelConfig(model)
 	var backend string
 	if exists {
 		backend = config.Model

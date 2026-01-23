@@ -40,7 +40,8 @@ import (
 // @Failure      400 {object} map[string]string
 // @Failure      500 {object} map[string]string
 // @Router       /v1/images/inpainting [post]
-func InpaintingEndpoint(cl *config.ModelConfigLoader, ml *model.ModelLoader, appConfig *config.ApplicationConfig) echo.HandlerFunc {
+func InpaintingEndpoint(ml *model.ModelLoader) echo.HandlerFunc {
+	appConfig := ml.ApplicationConfig()
 	return func(c echo.Context) error {
 		// Parse basic form values
 		modelName := c.FormValue("model")
@@ -231,7 +232,7 @@ func InpaintingEndpoint(cl *config.ModelConfigLoader, ml *model.ModelLoader, app
 		// Note: ImageGenerationFunc will call into the loaded model's GenerateImage which expects src JSON
 		// Also pass ref images (orig + mask) so backends that support ref images can use them.
 		refImages := []string{origRef, maskRef}
-		fn, err := backend.ImageGenerationFunc(height, width, steps, 0, prompt, "", jsonPath, dst, ml, *cfg, appConfig, refImages)
+		fn, err := backend.ImageGenerationFunc(height, width, steps, 0, prompt, "", jsonPath, dst, ml, *cfg, refImages)
 		if err != nil {
 			return err
 		}
