@@ -1,4 +1,46 @@
 ---
+- &lfm25
+  name: "lfm2.5-1.2b-q8"
+  url: "github:mudler/LocalAI/gallery/nanbeige4.1.yaml@master"
+  urls:
+    - https://huggingface.co/LiquidAI/LFM2.5-1.2B-Instruct
+    - https://huggingface.co/LiquidAI/LFM2.5-1.2B-Instruct-GGUF
+  icon: https://cdn-avatars.huggingface.co/v1/production/uploads/61b8e2ba285851687028d395/EsTgVtnM2IqVRKgPdfqcB.png
+  license: lfm1.0
+  description: |
+    LFM2.5-1.2B-Instruct is a state-of-the-art small language model developed by Liquid AI. This model is designed for efficient instruction-following and general-purpose text generation tasks while maintaining a compact size suitable for edge deployment.
+
+    Key features:
+      Compact Size: At just 1.2B parameters, it's ideal for resource-constrained environments
+      Instruction Following: Optimized for following user instructions and completing tasks
+      Efficient: Designed for fast inference with minimal resource usage
+      Versatile: Suitable for a wide range of NLP tasks including text generation, summarization, and more
+  tags:
+    - llm
+    - gguf
+    - gpu
+    - cpu
+    - liquid-ai
+    - instruct
+  overrides:
+    parameters:
+      model: LFM2.5-1.2B-Instruct-Q8_0.gguf
+  files:
+    - filename: LFM2.5-1.2B-Instruct-Q8_0.gguf
+      sha256: f6b981dcb86917fa463f78a362320bd5e2dc45445df147287eedb85e5a30d26a
+      uri: huggingface://LiquidAI/LFM2.5-1.2B-Instruct-GGUF/LFM2.5-1.2B-Instruct-Q8_0.gguf
+- !!merge <<: *lfm25
+  name: "lfm2.5-1.2b-q4"
+  urls:
+    - https://huggingface.co/LiquidAI/LFM2.5-1.2B-Instruct
+    - https://huggingface.co/LiquidAI/LFM2.5-1.2B-Instruct-GGUF
+  overrides:
+    parameters:
+      model: LFM2.5-1.2B-Instruct-Q4_K_M.gguf
+  files:
+    - filename: LFM2.5-1.2B-Instruct-Q4_K_M.gguf
+      sha256: b1b3de114215d9507409a662a501a631095a479a419584e8a2ded6304b19b4f5
+      uri: huggingface://LiquidAI/LFM2.5-1.2B-Instruct-GGUF/LFM2.5-1.2B-Instruct-Q4_K_M.gguf
 - &nanbeige4
   name: "nanbeige4.1-3b-q8"
   url: "github:mudler/LocalAI/gallery/nanbeige4.1.yaml@master"
