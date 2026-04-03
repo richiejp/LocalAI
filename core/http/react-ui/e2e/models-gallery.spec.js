@@ -78,3 +78,121 @@ test.describe('Models Gallery - Backend Features', () => {
     await expect(detail.locator('text=llama-cpp')).toBeVisible()
   })
 })
+
+const BACKEND_USECASES_MOCK = {
+  'llama-cpp': ['llm', 'embedding', 'vision'],
+  'whisper': ['stt'],
+  'stablediffusion': ['image'],
+}
+
+test.describe('Models Gallery - Multi-select Filters', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.route('**/api/models*', (route) => {
+      route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify(MOCK_MODELS_RESPONSE),
+      })
+    })
+    await page.route('**/api/backends/usecases', (route) => {
+      route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify(BACKEND_USECASES_MOCK),
+      })
+    })
+    await page.goto('/app/models')
+    await expect(page.locator('th', { hasText: 'Backend' })).toBeVisible({ timeout: 10_000 })
+  })
+
+  test('multi-select toggle: click LLM, TTS, then LLM again', async ({ page }) => {
+    const llmBtn = page.locator('.filter-btn', { hasText: 'LLM' })
+    const ttsBtn = page.locator('.filter-btn', { hasText: 'TTS' })
+
+    await llmBtn.click()
+    await expect(llmBtn).toHaveClass(/active/)
+
+    await ttsBtn.click()
+    await expect(llmBtn).toHaveClass(/active/)
+    await expect(ttsBtn).toHaveClass(/active/)
+
+    // Click LLM again to deselect it
+    await llmBtn.click()
+    await expect(llmBtn).not.toHaveClass(/active/)
+    await expect(ttsBtn).toHaveClass(/active/)
+  })
+
+  test('"All" clears selection', async ({ page }) => {
+    const llmBtn = page.locator('.filter-btn', { hasText: 'LLM' })
+    const allBtn = page.locator('.filter-btn', { hasText: 'All' })
+
+    await llmBtn.click()
+    await expect(llmBtn).toHaveClass(/active/)
+
+    await allBtn.click()
+    await expect(allBtn).toHaveClass(/active/)
+    await expect(llmBtn).not.toHaveClass(/active/)
+  })
+
+  test('query param sent correctly with multiple filters', async ({ page }) => {
+    const llmBtn = page.locator('.filter-btn', { hasText: 'LLM' })
+    const ttsBtn = page.locator('.filter-btn', { hasText: 'TTS' })
+
+    // Click LLM and wait for its request to settle
+    await llmBtn.click()
+    await page.waitForResponse(resp => resp.url().includes('/api/models'))
+
+    // Now click TTS and capture the resulting request
+    const [request] = await Promise.all([
+      page.waitForRequest(req => {
+        if (!req.url().includes('/api/models')) return false
+        const u = new URL(req.url())
+        const tag = u.searchParams.get('tag')
+        return tag && tag.split(',').length >= 2
+      }),
+      ttsBtn.click(),
+    ])
+
+    const url = new URL(request.url())
+    const tags = url.searchParams.get('tag').split(',').sort()
+    expect(tags).toEqual(['llm', 'tts'])
+  })
+
+  test('backend greys out unavailable filters', async ({ page }) => {
+    // Select llama-cpp backend via dropdown
+    await page.locator('button', { hasText: 'All Backends' }).click()
+    const dropdown = page.locator('input[placeholder="Search backends..."]').locator('..').locator('..')
+    await dropdown.locator('text=llama-cpp').click()
+
+    // Wait for filter state to update
+    const ttsBtn = page.locator('.filter-btn', { hasText: 'TTS' })
+    const sttBtn = page.locator('.filter-btn', { hasText: 'STT' })
+    const imageBtn = page.locator('.filter-btn', { hasText: 'Image' })
+
+    // TTS, STT, Image should be disabled for llama-cpp
+    await expect(ttsBtn).toBeDisabled()
+    await expect(sttBtn).toBeDisabled()
+    await expect(imageBtn).toBeDisabled()
+
+    // LLM, Embedding, Vision should remain enabled
+    const llmBtn = page.locator('.filter-btn', { hasText: 'LLM' })
+    const embBtn = page.locator('.filter-btn', { hasText: 'Embedding' })
+    const visBtn = page.locator('.filter-btn', { hasText: 'Vision' })
+    await expect(llmBtn).toBeEnabled()
+    await expect(embBtn).toBeEnabled()
+    await expect(visBtn).toBeEnabled()
+  })
+
+  test('backend clears incompatible filters', async ({ page }) => {
+    // Select TTS filter first
+    const ttsBtn = page.locator('.filter-btn', { hasText: 'TTS' })
+    await ttsBtn.click()
+    await expect(ttsBtn).toHaveClass(/active/)
+
+    // Now select llama-cpp backend (which doesn't support TTS)
+    await page.locator('button', { hasText: 'All Backends' }).click()
+    const dropdown = page.locator('input[placeholder="Search backends..."]').locator('..').locator('..')
+    await dropdown.locator('text=llama-cpp').click()
+
+    // TTS should be auto-removed from selection
+    await expect(ttsBtn).not.toHaveClass(/active/)
+  })
+})
