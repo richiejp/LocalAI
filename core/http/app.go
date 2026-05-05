@@ -267,10 +267,9 @@ func API(application *application.Application) (*echo.Echo, error) {
 		e.Static("/generated-videos", videoPath)
 	}
 
-	// Initialize usage recording when auth DB is available
-	if application.AuthDB() != nil {
-		httpMiddleware.InitUsageRecorder(application.AuthDB())
-	}
+	// Usage recording is initialised in application/startup.go and
+	// surfaced via application.StatsRecorder(); routes wire UsageMiddleware
+	// against that recorder regardless of auth state.
 
 	// Auth is applied to _all_ endpoints. Filtering out endpoints to bypass is
 	// the role of the exempt-path logic inside the middleware.

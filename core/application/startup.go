@@ -16,6 +16,7 @@ import (
 	"github.com/mudler/LocalAI/core/services/galleryop"
 	"github.com/mudler/LocalAI/core/services/jobs"
 	"github.com/mudler/LocalAI/core/services/nodes"
+	"github.com/mudler/LocalAI/core/services/routing/billing"
 	"github.com/mudler/LocalAI/core/services/storage"
 	"github.com/mudler/LocalAI/pkg/vram"
 	coreStartup "github.com/mudler/LocalAI/core/startup"
@@ -126,6 +127,29 @@ func New(opts ...config.AppOption) (*Application, error) {
 				}
 			}
 		}()
+	}
+
+	// Wire the routing-module billing recorder. The recorder runs in
+	// every mode (auth on/off, distributed/single-node) so that token
+	// tracking is not gated on auth — a no-auth single-user box still
+	// gets dashboards and `/api/usage` populated. The fallback user is
+	// non-nil only when auth is off; UsageMiddleware uses it to attribute
+	// requests with no authenticated user on the echo context.
+	if !options.DisableStats {
+		var statsBackend billing.StatsBackend
+		switch {
+		case application.authDB != nil:
+			statsBackend = billing.NewGormBackend(application.authDB, 0, 0)
+			xlog.Info("stats: using auth DB for usage records")
+		default:
+			statsBackend = billing.NewMemoryBackend(0)
+			application.fallbackUser = billing.LocalUser(options.DataPath)
+			xlog.Info("stats: using in-memory ring buffer (no-auth single-user mode)",
+				"local_user_id", application.fallbackUser.ID)
+		}
+		application.statsRecorder = billing.NewRecorder(statsBackend)
+	} else {
+		xlog.Info("stats: disabled by --disable-stats")
 	}
 
 	// Wire JobStore for DB-backed task/job persistence whenever auth DB is available.

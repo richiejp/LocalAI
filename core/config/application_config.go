@@ -39,6 +39,14 @@ type ApplicationConfig struct {
 	P2PNetworkID                  string
 	Federated                     bool
 
+	// DisableStats turns off per-request token tracking. By default the
+	// routing module's billing recorder runs in every mode (including
+	// no-auth single-user) so dashboards and `/api/usage` are immediately
+	// useful; set this to opt out of that, e.g., for ephemeral CI runs
+	// or privacy-strict deployments where no token-count history should
+	// touch disk or memory.
+	DisableStats bool
+
 	DisableWebUI                       bool
 	OllamaAPIRootEndpoint              bool
 	EnforcePredownloadScans            bool
@@ -582,6 +590,13 @@ func WithUploadDir(uploadDir string) AppOption {
 func WithDataPath(dataPath string) AppOption {
 	return func(o *ApplicationConfig) {
 		o.DataPath = dataPath
+	}
+}
+
+// WithDisableStats turns off the billing recorder. CLI: --disable-stats.
+func WithDisableStats(disable bool) AppOption {
+	return func(o *ApplicationConfig) {
+		o.DisableStats = disable
 	}
 }
 

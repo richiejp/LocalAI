@@ -9,11 +9,13 @@ import (
 
 	corebackend "github.com/mudler/LocalAI/core/backend"
 	"github.com/mudler/LocalAI/core/config"
+	"github.com/mudler/LocalAI/core/http/auth"
 	mcpTools "github.com/mudler/LocalAI/core/http/endpoints/mcp"
 	"github.com/mudler/LocalAI/core/services/agentpool"
 	"github.com/mudler/LocalAI/core/services/facerecognition"
 	"github.com/mudler/LocalAI/core/services/galleryop"
 	"github.com/mudler/LocalAI/core/services/nodes"
+	"github.com/mudler/LocalAI/core/services/routing/billing"
 	"github.com/mudler/LocalAI/core/services/voicerecognition"
 	"github.com/mudler/LocalAI/core/templates"
 	pkggrpc "github.com/mudler/LocalAI/pkg/grpc"
@@ -51,6 +53,8 @@ type Application struct {
 	faceRegistry       facerecognition.Registry
 	voiceRegistry      voicerecognition.Registry
 	authDB             *gorm.DB
+	statsRecorder      *billing.Recorder
+	fallbackUser       *auth.User
 	watchdogMutex      sync.Mutex
 	watchdogStop       chan bool
 	p2pMutex           sync.Mutex
@@ -183,6 +187,23 @@ func (a *Application) VoiceRegistry() voicerecognition.Registry {
 // AuthDB returns the auth database connection, or nil if auth is not enabled.
 func (a *Application) AuthDB() *gorm.DB {
 	return a.authDB
+}
+
+// StatsRecorder returns the billing recorder used by the usage
+// middleware. It is non-nil whenever stats are not explicitly disabled
+// — i.e., the no-auth single-user path still gets a working recorder
+// (in-memory by default). Routes register UsageMiddleware against this
+// recorder regardless of auth state.
+func (a *Application) StatsRecorder() *billing.Recorder {
+	return a.statsRecorder
+}
+
+// FallbackUser is the synthetic "local" user that UsageMiddleware uses
+// to attribute requests when no authenticated user is on the context
+// (i.e., --auth is off). nil when auth is on, since real users are
+// always available there.
+func (a *Application) FallbackUser() *auth.User {
+	return a.fallbackUser
 }
 
 // StartupConfig returns the original startup configuration (from env vars, before file loading)

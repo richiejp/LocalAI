@@ -16,7 +16,7 @@ func RegisterOpenAIRoutes(app *echo.Echo,
 	application *application.Application) {
 	// openAI compatible API endpoint
 	traceMiddleware := middleware.TraceMiddleware(application)
-	usageMiddleware := middleware.UsageMiddleware(application.AuthDB())
+	usageMiddleware := middleware.UsageMiddleware(application.StatsRecorder(), application.FallbackUser())
 
 	// realtime
 	// TODO: Modify/disable the API key middleware for this endpoint to allow ephemeral keys created by sessions
