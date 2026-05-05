@@ -67,4 +67,11 @@ type LocalAIClient interface {
 	// SetBranding updates the text branding fields. Asset uploads are not
 	// exposed over MCP — admins use the Settings UI for binary files.
 	SetBranding(ctx context.Context, req SetBrandingRequest) (*Branding, error)
+
+	// ---- Usage / billing ----
+
+	// GetUsageStats returns aggregated token usage. In single-user
+	// no-auth mode this reports the synthetic local user's usage. The
+	// implementation enforces "admin required to query other users".
+	GetUsageStats(ctx context.Context, q UsageStatsQuery) (*UsageStats, error)
 }

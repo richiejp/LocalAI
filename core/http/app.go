@@ -356,6 +356,11 @@ func API(application *application.Application) (*echo.Echo, error) {
 	// Register auth routes (login, callback, API keys, user management)
 	routes.RegisterAuthRoutes(e, application)
 
+	// Register routing-module usage endpoints. Unlike /api/auth/usage
+	// these go through the StatsRecorder and work in no-auth single-user
+	// mode by attributing requests to the synthetic "local" user.
+	routes.RegisterUsageRoutes(e, application)
+
 	routes.RegisterElevenLabsRoutes(e, requestExtractor, application.ModelConfigLoader(), application.ModelLoader(), application.ApplicationConfig())
 
 	// Create opcache for tracking UI operations (used by both UI and LocalAI routes)

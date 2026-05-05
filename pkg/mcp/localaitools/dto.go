@@ -137,6 +137,51 @@ type SetBrandingRequest struct {
 	InstanceTagline *string `json:"instance_tagline,omitempty" jsonschema:"Optional short subtitle shown beneath the instance name. Pass an empty string to clear."`
 }
 
+// UsageStatsQuery is the input for get_usage_stats. UserID is optional;
+// when empty the tool returns the calling user's own usage in auth-on
+// mode, or the synthetic local user's usage in single-user no-auth
+// mode. Admins (or the local user) may pass UserID to inspect another
+// user; the LocalAIClient implementation enforces the role check.
+type UsageStatsQuery struct {
+	Period string `json:"period,omitempty" jsonschema:"Time window. One of: day, week, month, all. Defaults to month."`
+	UserID string `json:"user_id,omitempty" jsonschema:"Optional user id to query. Empty = caller's own usage. Querying another user requires admin role."`
+	All    bool   `json:"all,omitempty"     jsonschema:"When true, returns the cluster-wide /api/usage/all view (admin-only when auth is on)."`
+}
+
+// UsageStats is the response shape for get_usage_stats. Mirrors what
+// /api/usage and /api/usage/all return so the LLM can correlate
+// dashboard numbers with what it pulls via MCP.
+type UsageStats struct {
+	Viewer  UsageViewer   `json:"viewer"`
+	Period  string        `json:"period"`
+	Totals  UsageTotals   `json:"totals"`
+	Buckets []UsageBucket `json:"buckets"`
+}
+
+type UsageViewer struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Role string `json:"role,omitempty"`
+}
+
+type UsageTotals struct {
+	PromptTokens     int64 `json:"prompt_tokens"`
+	CompletionTokens int64 `json:"completion_tokens"`
+	TotalTokens      int64 `json:"total_tokens"`
+	RequestCount     int64 `json:"request_count"`
+}
+
+type UsageBucket struct {
+	Bucket           string `json:"bucket"`
+	Model            string `json:"model"`
+	UserID           string `json:"user_id,omitempty"`
+	UserName         string `json:"user_name,omitempty"`
+	PromptTokens     int64  `json:"prompt_tokens"`
+	CompletionTokens int64  `json:"completion_tokens"`
+	TotalTokens      int64  `json:"total_tokens"`
+	RequestCount     int64  `json:"request_count"`
+}
+
 // VRAMEstimateRequest is the input for vram_estimate. The output type is
 // pkg/vram.EstimateResult — used directly via the LocalAIClient interface
 // so the LLM sees the same shape (size_bytes/size_display/vram_bytes/

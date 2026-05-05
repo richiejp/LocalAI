@@ -276,6 +276,11 @@ func (a *Application) start() error {
 			a.modelLoader,
 			a.galleryService,
 		)
+		// Wire usage tracking so the assistant's get_usage_stats tool
+		// returns real data; nil values keep the tool returning a clear
+		// "unavailable" error if startup ran with --disable-stats.
+		assistantClient.StatsRecorder = a.statsRecorder
+		assistantClient.FallbackUser = a.fallbackUser
 		if err := holder.Initialize(a.applicationConfig.Context, assistantClient, localaitools.Options{}); err != nil {
 			// Why log+continue instead of fail: the assistant is an optional
 			// feature; a failure here must not take down the whole server.

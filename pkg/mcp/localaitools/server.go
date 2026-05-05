@@ -48,6 +48,7 @@ func NewServer(client LocalAIClient, opts Options) *mcp.Server {
 	registerSystemTools(srv, client, opts)
 	registerStateTools(srv, client, opts)
 	registerBrandingTools(srv, client, opts)
+	registerUsageTools(srv, client, opts)
 
 	return srv
 }

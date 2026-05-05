@@ -17,6 +17,8 @@ import (
 	"github.com/mudler/LocalAI/core/schema"
 	"github.com/mudler/LocalAI/core/services/galleryop"
 	"github.com/mudler/LocalAI/core/services/modeladmin"
+	"github.com/mudler/LocalAI/core/http/auth"
+	"github.com/mudler/LocalAI/core/services/routing/billing"
 	"github.com/mudler/LocalAI/internal"
 	localaitools "github.com/mudler/LocalAI/pkg/mcp/localaitools"
 	"github.com/mudler/LocalAI/pkg/model"
@@ -36,12 +38,21 @@ type Client struct {
 	ModelLoader  *model.ModelLoader
 	Gallery      *galleryop.GalleryService
 
+	// StatsRecorder and FallbackUser are optional — they back the
+	// get_usage_stats tool. nil StatsRecorder makes the tool return an
+	// "unavailable" error, which keeps the assistant responsive on
+	// deployments that ran with --disable-stats or where startup wired
+	// the inproc client before stats were ready.
+	StatsRecorder *billing.Recorder
+	FallbackUser  *auth.User
+
 	modelAdmin *modeladmin.ConfigService
 }
 
 // New builds a Client wired to the given services. All fields are required
 // except ModelLoader (used only for SystemInfo's loaded-models report and
-// best-effort ShutdownModel calls during config edits).
+// best-effort ShutdownModel calls during config edits) and the stats
+// fields (StatsRecorder, FallbackUser) which gate get_usage_stats.
 func New(appConfig *config.ApplicationConfig, systemState *system.SystemState, cl *config.ModelConfigLoader, ml *model.ModelLoader, gs *galleryop.GalleryService) *Client {
 	return &Client{
 		AppConfig:    appConfig,
@@ -518,6 +529,77 @@ func capabilityToFlag(capability localaitools.Capability) (config.ModelConfigUse
 		return config.FLAG_VAD, true
 	}
 	return 0, false
+}
+
+// ---- Usage / billing ----
+
+func (c *Client) GetUsageStats(ctx context.Context, q localaitools.UsageStatsQuery) (*localaitools.UsageStats, error) {
+	if c.StatsRecorder == nil {
+		return nil, errors.New("usage tracking is not available on this server")
+	}
+	period := q.Period
+	if period == "" {
+		period = "month"
+	}
+
+	// Resolve which user this is. In single-user no-auth mode the
+	// inproc client doesn't have an echo context to read auth.GetUser
+	// from, so the FallbackUser is the only available identity. When
+	// auth IS on, the assistant runs under a privileged session and the
+	// caller can pass q.UserID; we don't enforce admin here because the
+	// MCP server itself is gated on admin (see prompts/10_safety.md).
+	var viewerID, viewerName, viewerRole string
+	switch {
+	case q.UserID != "":
+		viewerID = q.UserID
+	case c.FallbackUser != nil:
+		viewerID = c.FallbackUser.ID
+		viewerName = c.FallbackUser.Name
+		viewerRole = c.FallbackUser.Role
+	default:
+		return nil, errors.New("no user context for usage query (auth is on but no user id was provided)")
+	}
+
+	queryUser := viewerID
+	if q.All {
+		// /api/usage/all: pass empty UserID to the recorder so the
+		// backend returns the cluster-wide view.
+		queryUser = ""
+	}
+
+	rows, err := c.StatsRecorder.Aggregate(ctx, billing.AggregateQuery{
+		UserID: queryUser,
+		Period: period,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("aggregate usage: %w", err)
+	}
+
+	totals := localaitools.UsageTotals{}
+	buckets := make([]localaitools.UsageBucket, 0, len(rows))
+	for _, r := range rows {
+		buckets = append(buckets, localaitools.UsageBucket{
+			Bucket:           r.Bucket,
+			Model:            r.Model,
+			UserID:           r.UserID,
+			UserName:         r.UserName,
+			PromptTokens:     r.PromptTokens,
+			CompletionTokens: r.CompletionTokens,
+			TotalTokens:      r.TotalTokens,
+			RequestCount:     r.RequestCount,
+		})
+		totals.PromptTokens += r.PromptTokens
+		totals.CompletionTokens += r.CompletionTokens
+		totals.TotalTokens += r.TotalTokens
+		totals.RequestCount += r.RequestCount
+	}
+
+	return &localaitools.UsageStats{
+		Viewer:  localaitools.UsageViewer{ID: viewerID, Name: viewerName, Role: viewerRole},
+		Period:  period,
+		Totals:  totals,
+		Buckets: buckets,
+	}, nil
 }
 
 func capabilityFlagsOf(m *config.ModelConfig) []string {

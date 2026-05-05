@@ -74,6 +74,9 @@ func (stubClient) GetBranding(_ context.Context) (*localaitools.Branding, error)
 func (stubClient) SetBranding(_ context.Context, _ localaitools.SetBrandingRequest) (*localaitools.Branding, error) {
 	return &localaitools.Branding{InstanceName: "LocalAI"}, nil
 }
+func (stubClient) GetUsageStats(_ context.Context, _ localaitools.UsageStatsQuery) (*localaitools.UsageStats, error) {
+	return &localaitools.UsageStats{Viewer: localaitools.UsageViewer{ID: "stub", Name: "stub"}, Period: "month"}, nil
+}
 
 var _ = Describe("LocalAIAssistantHolder", func() {
 	var ctx context.Context

@@ -19,6 +19,7 @@ const (
 	ToolListNodes           = "list_nodes"
 	ToolVRAMEstimate        = "vram_estimate"
 	ToolGetBranding         = "get_branding"
+	ToolGetUsageStats       = "get_usage_stats"
 
 	// Mutating tools — guarded by Options.DisableMutating and the
 	// LLM-side safety prompt (see prompts/10_safety.md).

@@ -37,6 +37,7 @@ var toolToHTTPRoute = map[string]string{
 	ToolListNodes:           "GET /api/nodes",
 	ToolVRAMEstimate:        "POST /api/models/vram-estimate",
 	ToolGetBranding:         "GET /api/branding",
+	ToolGetUsageStats:       "GET /api/usage (or /api/usage/all when all=true)",
 
 	// Mutating tools.
 	ToolInstallModel:      "POST /models/apply",

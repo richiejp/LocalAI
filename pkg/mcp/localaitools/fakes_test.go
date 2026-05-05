@@ -45,6 +45,7 @@ type fakeClient struct {
 	toggleModelPinned   func(string, modeladmin.Action) error
 	getBranding         func() (*Branding, error)
 	setBranding         func(SetBrandingRequest) (*Branding, error)
+	getUsageStats       func(UsageStatsQuery) (*UsageStats, error)
 }
 
 type fakeCall struct {
@@ -234,6 +235,17 @@ func (f *fakeClient) SetBranding(_ context.Context, req SetBrandingRequest) (*Br
 		return f.setBranding(req)
 	}
 	return &Branding{InstanceName: "LocalAI"}, nil
+}
+
+func (f *fakeClient) GetUsageStats(_ context.Context, q UsageStatsQuery) (*UsageStats, error) {
+	f.record("GetUsageStats", q)
+	if f.getUsageStats != nil {
+		return f.getUsageStats(q)
+	}
+	return &UsageStats{
+		Viewer: UsageViewer{ID: "fake-user", Name: "fake", Role: "user"},
+		Period: "month",
+	}, nil
 }
 
 // boom is a sentinel error used by tests that want a deterministic error string.

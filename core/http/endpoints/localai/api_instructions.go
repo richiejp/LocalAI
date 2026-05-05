@@ -92,6 +92,12 @@ var instructionDefs = []instructionDef{
 		Tags:        []string{"branding"},
 		Intro:       "GET /api/branding is public so the login screen can render the configured logo before authentication. Text fields are saved through POST /api/settings; binary assets (logo, horizontal logo, favicon) use multipart upload at /api/branding/asset/{kind} and are served back from /branding/asset/{kind}.",
 	},
+	{
+		Name:        "usage-and-billing",
+		Description: "Per-user token usage and request counts, with optional cost tracking",
+		Tags:        []string{"usage"},
+		Intro:       "GET /api/usage returns the current user's token usage in time-bucketed form (day/week/month/all). In single-user no-auth mode the records are attributed to a synthetic local user with stable UUID, so this endpoint and the dashboard work without --auth. /api/usage/all is the cluster-wide view and requires admin (the local user is admin in single-user mode). UsageRecord fields include RequestedModel/ServedModel and PreFilter/PostFilterPromptTokens for routing- and PII-aware accounting.",
+	},
 }
 
 // swaggerState holds parsed swagger spec data, initialised once.

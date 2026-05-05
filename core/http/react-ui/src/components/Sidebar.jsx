@@ -69,7 +69,7 @@ const sections = [
     id: 'system',
     titleKey: 'sections.system',
     items: [
-      { path: '/app/usage', icon: 'fas fa-chart-bar', labelKey: 'items.usage', authOnly: true },
+      { path: '/app/usage', icon: 'fas fa-chart-bar', labelKey: 'items.usage' },
       { path: '/app/users', icon: 'fas fa-users', labelKey: 'items.users', adminOnly: true, authOnly: true },
       { path: '/app/backends', icon: 'fas fa-server', labelKey: 'items.backends', adminOnly: true },
       { path: '/app/traces', icon: 'fas fa-chart-line', labelKey: 'items.traces', adminOnly: true },

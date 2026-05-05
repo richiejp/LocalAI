@@ -24,6 +24,8 @@ const (
 	routeVRAMEstimate  = "/api/models/vram-estimate"
 	routeBranding      = "/api/branding"
 	routeSettings      = "/api/settings"
+	routeUsage         = "/api/usage"
+	routeUsageAll      = "/api/usage/all"
 )
 
 func routeJobStatus(jobID string) string {

@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -504,6 +505,80 @@ func (c *Client) SetBranding(ctx context.Context, req localaitools.SetBrandingRe
 		return nil, err
 	}
 	return c.GetBranding(ctx)
+}
+
+// ---- Usage / billing ----
+
+func (c *Client) GetUsageStats(ctx context.Context, q localaitools.UsageStatsQuery) (*localaitools.UsageStats, error) {
+	period := q.Period
+	if period == "" {
+		period = "month"
+	}
+	path := routeUsage
+	if q.All {
+		path = routeUsageAll
+	}
+	// Build query string. The /api/usage server expects these exact param
+	// names; any change there must update both sides.
+	qs := url.Values{}
+	qs.Set("period", period)
+	if q.UserID != "" && q.All {
+		qs.Set("user_id", q.UserID)
+	}
+	if enc := qs.Encode(); enc != "" {
+		path = path + "?" + enc
+	}
+
+	var raw struct {
+		Viewer struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+			Role string `json:"role"`
+		} `json:"viewer"`
+		Totals struct {
+			PromptTokens     int64 `json:"prompt_tokens"`
+			CompletionTokens int64 `json:"completion_tokens"`
+			TotalTokens      int64 `json:"total_tokens"`
+			RequestCount     int64 `json:"request_count"`
+		} `json:"totals"`
+		Usage []struct {
+			Bucket           string `json:"bucket"`
+			Model            string `json:"model"`
+			UserID           string `json:"user_id"`
+			UserName         string `json:"user_name"`
+			PromptTokens     int64  `json:"prompt_tokens"`
+			CompletionTokens int64  `json:"completion_tokens"`
+			TotalTokens      int64  `json:"total_tokens"`
+			RequestCount     int64  `json:"request_count"`
+		} `json:"usage"`
+	}
+	if err := c.do(ctx, http.MethodGet, path, nil, &raw); err != nil {
+		return nil, err
+	}
+	out := &localaitools.UsageStats{
+		Viewer: localaitools.UsageViewer{ID: raw.Viewer.ID, Name: raw.Viewer.Name, Role: raw.Viewer.Role},
+		Period: period,
+		Totals: localaitools.UsageTotals{
+			PromptTokens:     raw.Totals.PromptTokens,
+			CompletionTokens: raw.Totals.CompletionTokens,
+			TotalTokens:      raw.Totals.TotalTokens,
+			RequestCount:     raw.Totals.RequestCount,
+		},
+		Buckets: make([]localaitools.UsageBucket, 0, len(raw.Usage)),
+	}
+	for _, b := range raw.Usage {
+		out.Buckets = append(out.Buckets, localaitools.UsageBucket{
+			Bucket:           b.Bucket,
+			Model:            b.Model,
+			UserID:           b.UserID,
+			UserName:         b.UserName,
+			PromptTokens:     b.PromptTokens,
+			CompletionTokens: b.CompletionTokens,
+			TotalTokens:      b.TotalTokens,
+			RequestCount:     b.RequestCount,
+		})
+	}
+	return out, nil
 }
 
 // ---- helpers ----
