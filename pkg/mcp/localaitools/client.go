@@ -74,4 +74,15 @@ type LocalAIClient interface {
 	// no-auth mode this reports the synthetic local user's usage. The
 	// implementation enforces "admin required to query other users".
 	GetUsageStats(ctx context.Context, q UsageStatsQuery) (*UsageStats, error)
+
+	// ---- PII filter ----
+	// ListPIIPatterns returns the active PII pattern set with each
+	// one's action.
+	ListPIIPatterns(ctx context.Context) ([]PIIPattern, error)
+	// GetPIIEvents returns recent redaction events. Implementation
+	// enforces "admin required" when auth is on.
+	GetPIIEvents(ctx context.Context, q PIIEventsQuery) ([]PIIEvent, error)
+	// TestPIIRedaction dry-runs the redactor against text. No event
+	// is recorded.
+	TestPIIRedaction(ctx context.Context, req PIIRedactTestRequest) (*PIIRedactTestResult, error)
 }

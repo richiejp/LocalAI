@@ -17,6 +17,7 @@ import (
 	"github.com/mudler/LocalAI/core/services/jobs"
 	"github.com/mudler/LocalAI/core/services/nodes"
 	"github.com/mudler/LocalAI/core/services/routing/billing"
+	"github.com/mudler/LocalAI/core/services/routing/pii"
 	"github.com/mudler/LocalAI/core/services/storage"
 	"github.com/mudler/LocalAI/pkg/vram"
 	coreStartup "github.com/mudler/LocalAI/core/startup"
@@ -150,6 +151,27 @@ func New(opts ...config.AppOption) (*Application, error) {
 		application.statsRecorder = billing.NewRecorder(statsBackend)
 	} else {
 		xlog.Info("stats: disabled by --disable-stats")
+	}
+
+	// Wire the regex PII filter. Default-on: a single-user box gets
+	// the built-in pattern set the first time it starts, with email/
+	// phone/SSN/credit-card on mask and api_key_prefix on block. If
+	// the operator wants different actions, --pii-config points at a
+	// YAML file that overrides per-id; --disable-pii turns it off
+	// entirely.
+	if !options.DisablePII {
+		patterns, err := pii.LoadConfig(options.PIIConfigPath)
+		if err != nil {
+			return nil, fmt.Errorf("pii config: %w", err)
+		}
+		application.piiRedactor = pii.NewRedactor(patterns)
+		application.piiEvents = pii.NewMemoryEventStore(0)
+		xlog.Info("pii: filter enabled",
+			"patterns", len(patterns),
+			"config_path", options.PIIConfigPath,
+		)
+	} else {
+		xlog.Info("pii: disabled by --disable-pii")
 	}
 
 	// Wire JobStore for DB-backed task/job persistence whenever auth DB is available.

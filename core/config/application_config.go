@@ -47,6 +47,25 @@ type ApplicationConfig struct {
 	// touch disk or memory.
 	DisableStats bool
 
+	// PIIConfigPath points to an optional YAML file describing the PII
+	// pattern set. When empty, the routing/pii module's DefaultPatterns()
+	// (email, phone, SSN, credit card, IPv4, API key prefixes) are
+	// loaded with their default actions. Each entry overrides the
+	// matching default by ID:
+	//
+	//   patterns:
+	//     - id: email
+	//       action: route_local      # downgrade default mask -> route_local
+	//     - id: ssn
+	//       action: block            # upgrade default mask -> block
+	//
+	// Unknown ids are rejected with a clear error at startup.
+	PIIConfigPath string
+
+	// DisablePII turns the regex PII filter off entirely. Default
+	// (false) enables it on the OpenAI chat completions route.
+	DisablePII bool
+
 	DisableWebUI                       bool
 	OllamaAPIRootEndpoint              bool
 	EnforcePredownloadScans            bool
@@ -597,6 +616,21 @@ func WithDataPath(dataPath string) AppOption {
 func WithDisableStats(disable bool) AppOption {
 	return func(o *ApplicationConfig) {
 		o.DisableStats = disable
+	}
+}
+
+// WithPIIConfigPath points the routing PII filter at a YAML config
+// file. CLI: --pii-config.
+func WithPIIConfigPath(path string) AppOption {
+	return func(o *ApplicationConfig) {
+		o.PIIConfigPath = path
+	}
+}
+
+// WithDisablePII turns the regex PII filter off. CLI: --disable-pii.
+func WithDisablePII(disable bool) AppOption {
+	return func(o *ApplicationConfig) {
+		o.DisablePII = disable
 	}
 }
 

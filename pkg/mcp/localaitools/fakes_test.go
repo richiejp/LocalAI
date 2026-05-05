@@ -46,6 +46,9 @@ type fakeClient struct {
 	getBranding         func() (*Branding, error)
 	setBranding         func(SetBrandingRequest) (*Branding, error)
 	getUsageStats       func(UsageStatsQuery) (*UsageStats, error)
+	listPIIPatterns     func() ([]PIIPattern, error)
+	getPIIEvents        func(PIIEventsQuery) ([]PIIEvent, error)
+	testPIIRedaction    func(PIIRedactTestRequest) (*PIIRedactTestResult, error)
 }
 
 type fakeCall struct {
@@ -246,6 +249,30 @@ func (f *fakeClient) GetUsageStats(_ context.Context, q UsageStatsQuery) (*Usage
 		Viewer: UsageViewer{ID: "fake-user", Name: "fake", Role: "user"},
 		Period: "month",
 	}, nil
+}
+
+func (f *fakeClient) ListPIIPatterns(_ context.Context) ([]PIIPattern, error) {
+	f.record("ListPIIPatterns", nil)
+	if f.listPIIPatterns != nil {
+		return f.listPIIPatterns()
+	}
+	return []PIIPattern{}, nil
+}
+
+func (f *fakeClient) GetPIIEvents(_ context.Context, q PIIEventsQuery) ([]PIIEvent, error) {
+	f.record("GetPIIEvents", q)
+	if f.getPIIEvents != nil {
+		return f.getPIIEvents(q)
+	}
+	return []PIIEvent{}, nil
+}
+
+func (f *fakeClient) TestPIIRedaction(_ context.Context, req PIIRedactTestRequest) (*PIIRedactTestResult, error) {
+	f.record("TestPIIRedaction", req)
+	if f.testPIIRedaction != nil {
+		return f.testPIIRedaction(req)
+	}
+	return &PIIRedactTestResult{Redacted: req.Text}, nil
 }
 
 // boom is a sentinel error used by tests that want a deterministic error string.

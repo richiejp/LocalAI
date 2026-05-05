@@ -77,6 +77,15 @@ func (stubClient) SetBranding(_ context.Context, _ localaitools.SetBrandingReque
 func (stubClient) GetUsageStats(_ context.Context, _ localaitools.UsageStatsQuery) (*localaitools.UsageStats, error) {
 	return &localaitools.UsageStats{Viewer: localaitools.UsageViewer{ID: "stub", Name: "stub"}, Period: "month"}, nil
 }
+func (stubClient) ListPIIPatterns(_ context.Context) ([]localaitools.PIIPattern, error) {
+	return nil, nil
+}
+func (stubClient) GetPIIEvents(_ context.Context, _ localaitools.PIIEventsQuery) ([]localaitools.PIIEvent, error) {
+	return nil, nil
+}
+func (stubClient) TestPIIRedaction(_ context.Context, req localaitools.PIIRedactTestRequest) (*localaitools.PIIRedactTestResult, error) {
+	return &localaitools.PIIRedactTestResult{Redacted: req.Text}, nil
+}
 
 var _ = Describe("LocalAIAssistantHolder", func() {
 	var ctx context.Context

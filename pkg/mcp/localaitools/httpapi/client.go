@@ -581,6 +581,54 @@ func (c *Client) GetUsageStats(ctx context.Context, q localaitools.UsageStatsQue
 	return out, nil
 }
 
+// ---- PII filter ----
+
+func (c *Client) ListPIIPatterns(ctx context.Context) ([]localaitools.PIIPattern, error) {
+	var raw struct {
+		Patterns []localaitools.PIIPattern `json:"patterns"`
+	}
+	if err := c.do(ctx, http.MethodGet, routePIIPatterns, nil, &raw); err != nil {
+		return nil, err
+	}
+	return raw.Patterns, nil
+}
+
+func (c *Client) GetPIIEvents(ctx context.Context, q localaitools.PIIEventsQuery) ([]localaitools.PIIEvent, error) {
+	qs := url.Values{}
+	if q.CorrelationID != "" {
+		qs.Set("correlation_id", q.CorrelationID)
+	}
+	if q.UserID != "" {
+		qs.Set("user_id", q.UserID)
+	}
+	if q.PatternID != "" {
+		qs.Set("pattern_id", q.PatternID)
+	}
+	if q.Limit > 0 {
+		qs.Set("limit", fmt.Sprintf("%d", q.Limit))
+	}
+	path := routePIIEvents
+	if enc := qs.Encode(); enc != "" {
+		path = path + "?" + enc
+	}
+
+	var raw struct {
+		Events []localaitools.PIIEvent `json:"events"`
+	}
+	if err := c.do(ctx, http.MethodGet, path, nil, &raw); err != nil {
+		return nil, err
+	}
+	return raw.Events, nil
+}
+
+func (c *Client) TestPIIRedaction(ctx context.Context, req localaitools.PIIRedactTestRequest) (*localaitools.PIIRedactTestResult, error) {
+	var out localaitools.PIIRedactTestResult
+	if err := c.do(ctx, http.MethodPost, routePIITest, map[string]string{"text": req.Text}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // ---- helpers ----
 
 func contains(haystack, lowerNeedle string) bool {

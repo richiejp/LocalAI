@@ -38,6 +38,9 @@ var toolToHTTPRoute = map[string]string{
 	ToolVRAMEstimate:        "POST /api/models/vram-estimate",
 	ToolGetBranding:         "GET /api/branding",
 	ToolGetUsageStats:       "GET /api/usage (or /api/usage/all when all=true)",
+	ToolListPIIPatterns:     "GET /api/pii/patterns",
+	ToolGetPIIEvents:        "GET /api/pii/events",
+	ToolTestPIIRedaction:    "POST /api/pii/test",
 
 	// Mutating tools.
 	ToolInstallModel:      "POST /models/apply",

@@ -360,6 +360,7 @@ func API(application *application.Application) (*echo.Echo, error) {
 	// these go through the StatsRecorder and work in no-auth single-user
 	// mode by attributing requests to the synthetic "local" user.
 	routes.RegisterUsageRoutes(e, application)
+	routes.RegisterPIIRoutes(e, application)
 
 	routes.RegisterElevenLabsRoutes(e, requestExtractor, application.ModelConfigLoader(), application.ModelLoader(), application.ApplicationConfig())
 

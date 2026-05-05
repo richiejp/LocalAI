@@ -20,6 +20,9 @@ const (
 	ToolVRAMEstimate        = "vram_estimate"
 	ToolGetBranding         = "get_branding"
 	ToolGetUsageStats       = "get_usage_stats"
+	ToolListPIIPatterns     = "list_pii_patterns"
+	ToolGetPIIEvents        = "get_pii_events"
+	ToolTestPIIRedaction    = "test_pii_redaction"
 
 	// Mutating tools — guarded by Options.DisableMutating and the
 	// LLM-side safety prompt (see prompts/10_safety.md).

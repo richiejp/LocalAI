@@ -9,6 +9,8 @@ import (
 	"github.com/mudler/LocalAI/core/http/endpoints/openai"
 	"github.com/mudler/LocalAI/core/http/middleware"
 	"github.com/mudler/LocalAI/core/schema"
+	"github.com/mudler/LocalAI/core/services/routing/pii"
+	"github.com/mudler/LocalAI/core/services/routing/piiadapter"
 )
 
 func RegisterOpenAIRoutes(app *echo.Echo,
@@ -46,6 +48,12 @@ func RegisterOpenAIRoutes(app *echo.Echo,
 				return next(c)
 			}
 		},
+		// PII redaction last in the slice = innermost middleware =
+		// runs after the OpenAI request has been parsed onto the
+		// context. Mutates message text in place (mask), short-
+		// circuits the request (block), or sets a route_local flag
+		// the future router middleware honours.
+		pii.RequestMiddleware(application.PIIRedactor(), application.PIIEvents(), piiadapter.OpenAI(), application.FallbackUser()),
 	}
 	app.POST("/v1/chat/completions", chatHandler, chatMiddleware...)
 	app.POST("/chat/completions", chatHandler, chatMiddleware...)

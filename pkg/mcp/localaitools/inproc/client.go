@@ -19,6 +19,7 @@ import (
 	"github.com/mudler/LocalAI/core/services/modeladmin"
 	"github.com/mudler/LocalAI/core/http/auth"
 	"github.com/mudler/LocalAI/core/services/routing/billing"
+	"github.com/mudler/LocalAI/core/services/routing/pii"
 	"github.com/mudler/LocalAI/internal"
 	localaitools "github.com/mudler/LocalAI/pkg/mcp/localaitools"
 	"github.com/mudler/LocalAI/pkg/model"
@@ -45,6 +46,12 @@ type Client struct {
 	// the inproc client before stats were ready.
 	StatsRecorder *billing.Recorder
 	FallbackUser  *auth.User
+
+	// PIIRedactor and PIIEvents back the list_pii_patterns,
+	// get_pii_events, and test_pii_redaction tools. nil values cause
+	// the tools to return a "filter disabled" error.
+	PIIRedactor *pii.Redactor
+	PIIEvents   pii.EventStore
 
 	modelAdmin *modeladmin.ConfigService
 }
@@ -600,6 +607,77 @@ func (c *Client) GetUsageStats(ctx context.Context, q localaitools.UsageStatsQue
 		Totals:  totals,
 		Buckets: buckets,
 	}, nil
+}
+
+// ---- PII filter ----
+
+func (c *Client) ListPIIPatterns(_ context.Context) ([]localaitools.PIIPattern, error) {
+	if c.PIIRedactor == nil {
+		return nil, errors.New("PII filter is disabled")
+	}
+	patterns := c.PIIRedactor.Patterns()
+	out := make([]localaitools.PIIPattern, 0, len(patterns))
+	for _, p := range patterns {
+		out = append(out, localaitools.PIIPattern{
+			ID:             p.ID,
+			Description:    p.Description,
+			Action:         string(p.Action),
+			MaxMatchLength: p.MaxMatchLength,
+		})
+	}
+	return out, nil
+}
+
+func (c *Client) GetPIIEvents(ctx context.Context, q localaitools.PIIEventsQuery) ([]localaitools.PIIEvent, error) {
+	if c.PIIEvents == nil {
+		return nil, errors.New("PII filter is disabled")
+	}
+	events, err := c.PIIEvents.List(ctx, pii.ListQuery{
+		CorrelationID: q.CorrelationID,
+		UserID:        q.UserID,
+		PatternID:     q.PatternID,
+		Limit:         q.Limit,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list pii events: %w", err)
+	}
+	out := make([]localaitools.PIIEvent, 0, len(events))
+	for _, e := range events {
+		out = append(out, localaitools.PIIEvent{
+			ID:            e.ID,
+			CorrelationID: e.CorrelationID,
+			UserID:        e.UserID,
+			Direction:     string(e.Direction),
+			PatternID:     e.PatternID,
+			ByteOffset:    e.ByteOffset,
+			Length:        e.Length,
+			HashPrefix:    e.HashPrefix,
+			Action:        string(e.Action),
+			CreatedAt:     e.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
+		})
+	}
+	return out, nil
+}
+
+func (c *Client) TestPIIRedaction(_ context.Context, req localaitools.PIIRedactTestRequest) (*localaitools.PIIRedactTestResult, error) {
+	if c.PIIRedactor == nil {
+		return nil, errors.New("PII filter is disabled")
+	}
+	res := c.PIIRedactor.Redact(req.Text)
+	out := &localaitools.PIIRedactTestResult{
+		Redacted:  res.Redacted,
+		Blocked:   res.Blocked,
+		LocalOnly: res.LocalOnly,
+	}
+	for _, s := range res.Spans {
+		out.Spans = append(out.Spans, localaitools.PIIEventSpan{
+			Start:      s.Start,
+			End:        s.End,
+			Pattern:    s.Pattern,
+			HashPrefix: s.HashPrefix,
+		})
+	}
+	return out, nil
 }
 
 func capabilityFlagsOf(m *config.ModelConfig) []string {

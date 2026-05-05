@@ -16,6 +16,7 @@ import (
 	"github.com/mudler/LocalAI/core/services/galleryop"
 	"github.com/mudler/LocalAI/core/services/nodes"
 	"github.com/mudler/LocalAI/core/services/routing/billing"
+	"github.com/mudler/LocalAI/core/services/routing/pii"
 	"github.com/mudler/LocalAI/core/services/voicerecognition"
 	"github.com/mudler/LocalAI/core/templates"
 	pkggrpc "github.com/mudler/LocalAI/pkg/grpc"
@@ -55,6 +56,8 @@ type Application struct {
 	authDB             *gorm.DB
 	statsRecorder      *billing.Recorder
 	fallbackUser       *auth.User
+	piiRedactor        *pii.Redactor
+	piiEvents          pii.EventStore
 	watchdogMutex      sync.Mutex
 	watchdogStop       chan bool
 	p2pMutex           sync.Mutex
@@ -206,6 +209,20 @@ func (a *Application) FallbackUser() *auth.User {
 	return a.fallbackUser
 }
 
+// PIIRedactor returns the regex-tier PII redactor or nil if PII
+// filtering is disabled. The chat-route middleware uses this to apply
+// redaction before dispatch.
+func (a *Application) PIIRedactor() *pii.Redactor {
+	return a.piiRedactor
+}
+
+// PIIEvents returns the PII event store. Same nil-when-disabled
+// semantics as PIIRedactor; admin REST and MCP read tools call List
+// against it.
+func (a *Application) PIIEvents() pii.EventStore {
+	return a.piiEvents
+}
+
 // StartupConfig returns the original startup configuration (from env vars, before file loading)
 func (a *Application) StartupConfig() *config.ApplicationConfig {
 	return a.startupConfig
@@ -281,6 +298,9 @@ func (a *Application) start() error {
 		// "unavailable" error if startup ran with --disable-stats.
 		assistantClient.StatsRecorder = a.statsRecorder
 		assistantClient.FallbackUser = a.fallbackUser
+		// PII filter — same nil-or-real wiring.
+		assistantClient.PIIRedactor = a.piiRedactor
+		assistantClient.PIIEvents = a.piiEvents
 		if err := holder.Initialize(a.applicationConfig.Context, assistantClient, localaitools.Options{}); err != nil {
 			// Why log+continue instead of fail: the assistant is an optional
 			// feature; a failure here must not take down the whole server.

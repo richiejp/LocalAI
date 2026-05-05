@@ -98,6 +98,12 @@ var instructionDefs = []instructionDef{
 		Tags:        []string{"usage"},
 		Intro:       "GET /api/usage returns the current user's token usage in time-bucketed form (day/week/month/all). In single-user no-auth mode the records are attributed to a synthetic local user with stable UUID, so this endpoint and the dashboard work without --auth. /api/usage/all is the cluster-wide view and requires admin (the local user is admin in single-user mode). UsageRecord fields include RequestedModel/ServedModel and PreFilter/PostFilterPromptTokens for routing- and PII-aware accounting.",
 	},
+	{
+		Name:        "pii-filtering",
+		Description: "Inspect and tune the regex PII filter applied to chat requests",
+		Tags:        []string{"pii"},
+		Intro:       "GET /api/pii/patterns lists the active pattern set with each one's action (mask, block, route_local). GET /api/pii/events returns recent redaction events filtered by correlation_id / user_id / pattern_id (admin or local-user only). POST /api/pii/test dry-runs the redactor against an admin-supplied string. Default patterns: email, phone, SSN, credit card (Luhn), IPv4, common API key prefixes (sk-, pk-, ghp_, github_pat_). Override per-pattern actions via --pii-config pii.yaml; --disable-pii turns the filter off.",
+	},
 }
 
 // swaggerState holds parsed swagger spec data, initialised once.

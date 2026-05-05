@@ -26,6 +26,9 @@ const (
 	routeSettings      = "/api/settings"
 	routeUsage         = "/api/usage"
 	routeUsageAll      = "/api/usage/all"
+	routePIIPatterns   = "/api/pii/patterns"
+	routePIIEvents     = "/api/pii/events"
+	routePIITest       = "/api/pii/test"
 )
 
 func routeJobStatus(jobID string) string {

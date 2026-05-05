@@ -182,6 +182,61 @@ type UsageBucket struct {
 	RequestCount     int64  `json:"request_count"`
 }
 
+// ---- PII / sensitive data tools ----
+
+// PIIPattern is one row in the list_pii_patterns response.
+type PIIPattern struct {
+	ID             string `json:"id"`
+	Description    string `json:"description"`
+	Action         string `json:"action"` // mask | block | route_local
+	MaxMatchLength int    `json:"max_match_length"`
+}
+
+// PIIEventsQuery filters get_pii_events.
+type PIIEventsQuery struct {
+	CorrelationID string `json:"correlation_id,omitempty" jsonschema:"Optional X-Correlation-ID join key (binds events to the request and usage record)."`
+	UserID        string `json:"user_id,omitempty"        jsonschema:"Optional user id to scope the query."`
+	PatternID     string `json:"pattern_id,omitempty"     jsonschema:"Optional pattern id (e.g. email, ssn)."`
+	Limit         int    `json:"limit,omitempty"          jsonschema:"Maximum events. Defaults to 100."`
+}
+
+// PIIEvent is the LLM-facing view of one redaction record. The matched
+// value is never exposed; admins audit by hash_prefix.
+type PIIEvent struct {
+	ID            string `json:"id"`
+	CorrelationID string `json:"correlation_id"`
+	UserID        string `json:"user_id"`
+	Direction     string `json:"direction"`
+	PatternID     string `json:"pattern_id"`
+	ByteOffset    int    `json:"byte_offset"`
+	Length        int    `json:"length"`
+	HashPrefix    string `json:"hash_prefix"`
+	Action        string `json:"action"`
+	CreatedAt     string `json:"created_at"`
+}
+
+// PIIRedactTestRequest is the input for test_pii_redaction.
+type PIIRedactTestRequest struct {
+	Text string `json:"text" jsonschema:"The candidate text. Will be run through the redactor without recording an event."`
+}
+
+// PIIRedactTestResult is the output for test_pii_redaction. spans
+// describes where the redactor matched; redacted is the text after
+// applying mask actions; blocked / local_only flag stronger actions.
+type PIIRedactTestResult struct {
+	Redacted  string        `json:"redacted"`
+	Spans     []PIIEventSpan `json:"spans"`
+	Blocked   bool          `json:"blocked"`
+	LocalOnly bool          `json:"local_only"`
+}
+
+type PIIEventSpan struct {
+	Start      int    `json:"start"`
+	End        int    `json:"end"`
+	Pattern    string `json:"pattern"`
+	HashPrefix string `json:"hash_prefix"`
+}
+
 // VRAMEstimateRequest is the input for vram_estimate. The output type is
 // pkg/vram.EstimateResult — used directly via the LocalAIClient interface
 // so the LLM sees the same shape (size_bytes/size_display/vram_bytes/
