@@ -13,6 +13,7 @@ import (
 	mcpTools "github.com/mudler/LocalAI/core/http/endpoints/mcp"
 	"github.com/mudler/LocalAI/core/http/middleware"
 	"github.com/mudler/LocalAI/core/schema"
+	"github.com/mudler/LocalAI/core/services/routing/pii"
 	"github.com/mudler/LocalAI/pkg/functions"
 	reason "github.com/mudler/LocalAI/pkg/reasoning"
 
@@ -72,7 +73,7 @@ func mergeToolCallDeltas(existing []schema.ToolCall, deltas []schema.ToolCall) [
 // @Param request body schema.OpenAIRequest true "query params"
 // @Success 200 {object} schema.OpenAIResponse "Response"
 // @Router /v1/chat/completions [post]
-func ChatEndpoint(cl *config.ModelConfigLoader, ml *model.ModelLoader, evaluator *templates.Evaluator, startupOptions *config.ApplicationConfig, natsClient mcpTools.MCPNATSClient, assistantHolder *mcpTools.LocalAIAssistantHolder) echo.HandlerFunc {
+func ChatEndpoint(cl *config.ModelConfigLoader, ml *model.ModelLoader, evaluator *templates.Evaluator, startupOptions *config.ApplicationConfig, natsClient mcpTools.MCPNATSClient, assistantHolder *mcpTools.LocalAIAssistantHolder, piiRedactor *pii.Redactor, piiEvents pii.EventStore) echo.HandlerFunc {
 	process := func(s string, req *schema.OpenAIRequest, config *config.ModelConfig, loader *model.ModelLoader, responses chan schema.OpenAIResponse, extraUsage bool, id string, created int) error {
 		initialMessage := schema.OpenAIResponse{
 			ID:      id,
@@ -683,6 +684,42 @@ func ChatEndpoint(cl *config.ModelConfigLoader, ml *model.ModelLoader, evaluator
 			c.Response().Header().Set("Connection", "keep-alive")
 			c.Response().Header().Set("X-Correlation-ID", id)
 
+			// Per-stream PII filter: when the resolved model has PII
+			// enabled (per the per-model gate the request-side
+			// middleware also reads), wrap the response content so
+			// values that span chunk boundaries still get masked. The
+			// filter is gated on the same ModelConfig accessor as the
+			// request middleware, so a user that disabled PII on the
+			// model gets no filter on either direction.
+			var streamPIIFilter *pii.StreamFilter
+			if piiRedactor != nil && config.PIIIsEnabled() {
+				correlationID := c.Response().Header().Get("X-Correlation-ID")
+				userID := ""
+				if u := auth.GetUser(c); u != nil {
+					userID = u.ID
+				}
+				// Per-model action overrides go through the same map
+				// the request-side middleware uses; convert raw YAML
+				// strings to typed Actions and drop unknowns.
+				var overrides map[string]pii.Action
+				if raw := config.PIIPatternOverrides(); len(raw) > 0 {
+					overrides = make(map[string]pii.Action, len(raw))
+					for id, action := range raw {
+						switch pii.Action(action) {
+						case pii.ActionMask, pii.ActionBlock, pii.ActionRouteLocal:
+							overrides[id] = pii.Action(action)
+						}
+					}
+				}
+				streamPIIFilter = pii.NewStreamFilter(
+					piiRedactor,
+					overrides,
+					piiEvents,
+					correlationID,
+					userID,
+				)
+			}
+
 			mcpStreamMaxIterations := 10
 			if config.Agent.MaxIterations > 0 {
 				mcpStreamMaxIterations = config.Agent.MaxIterations
@@ -739,12 +776,48 @@ func ChatEndpoint(cl *config.ModelConfigLoader, ml *model.ModelLoader, evaluator
 								collectedToolCalls = mergeToolCallDeltas(collectedToolCalls, ev.Choices[0].Delta.ToolCalls)
 							}
 						}
-						// Collect content for MCP conversation history and automatic tool parsing fallback
+						// Collect content for MCP conversation history and automatic tool parsing fallback.
+						// We collect the RAW (unfiltered) content so the model's tool-call
+						// markup keeps parsing correctly even when PII redaction would mask
+						// substrings.
 						if (hasMCPToolsStream || config.FunctionsConfig.AutomaticToolParsingFallback) && ev.Choices[0].Delta != nil && ev.Choices[0].Delta.Content != nil {
 							if s, ok := ev.Choices[0].Delta.Content.(string); ok {
 								collectedContent += s
 							} else if sp, ok := ev.Choices[0].Delta.Content.(*string); ok && sp != nil {
 								collectedContent += *sp
+							}
+						}
+						// Stream-side PII filter: feed the content delta
+						// through the buffered-emit filter. The filter
+						// holds back a tail to handle pattern boundaries
+						// across chunks, so a Push may legitimately
+						// return "" — drop the chunk in that case rather
+						// than emitting an empty Delta to the wire.
+						if streamPIIFilter != nil && ev.Choices[0].Delta != nil && ev.Choices[0].Delta.Content != nil {
+							var raw string
+							switch v := ev.Choices[0].Delta.Content.(type) {
+							case string:
+								raw = v
+							case *string:
+								if v != nil {
+									raw = *v
+								}
+							}
+							filtered := streamPIIFilter.Push(raw)
+							if filtered == "" {
+								// Fully buffered — skip this chunk's
+								// content. Still emit non-content chunks
+								// (role, tool_calls). When this delta is
+								// content-only and we buffer it, drop the
+								// whole event to avoid a vestigial
+								// {"delta":{}} on the wire.
+								if ev.Choices[0].Delta.Role == "" && len(ev.Choices[0].Delta.ToolCalls) == 0 && ev.Choices[0].Delta.Reasoning == nil {
+									continue
+								}
+								// Mixed delta — strip content, keep the rest.
+								ev.Choices[0].Delta.Content = nil
+							} else {
+								ev.Choices[0].Delta.Content = filtered
 							}
 						}
 						// OpenAI streaming spec: intermediate chunks must NOT
@@ -892,6 +965,31 @@ func ChatEndpoint(cl *config.ModelConfigLoader, ml *model.ModelLoader, evaluator
 						fmt.Fprintf(c.Response().Writer, "data: %s\n\n", respData)
 						c.Response().Flush()
 						toolsCalled = true
+					}
+				}
+
+				// Drain the per-stream PII filter before the stop chunk
+				// so any text held back by the buffered-emit invariant
+				// reaches the client as a regular content delta. We
+				// emit it as a chunk WITHOUT a finish_reason so the
+				// next "stop" chunk still terminates the stream.
+				if streamPIIFilter != nil {
+					residual := streamPIIFilter.Drain()
+					if residual != "" {
+						drainResp := &schema.OpenAIResponse{
+							ID:      id,
+							Created: created,
+							Model:   input.Model,
+							Choices: []schema.Choice{{
+								Delta: &schema.Message{Content: residual},
+								Index: 0,
+							}},
+							Object: "chat.completion.chunk",
+						}
+						if drainBytes, err := json.Marshal(drainResp); err == nil {
+							fmt.Fprintf(c.Response().Writer, "data: %s\n\n", drainBytes)
+							c.Response().Flush()
+						}
 					}
 				}
 

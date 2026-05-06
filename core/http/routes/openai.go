@@ -34,7 +34,7 @@ func RegisterOpenAIRoutes(app *echo.Echo,
 	}
 
 	// chat
-	chatHandler := openai.ChatEndpoint(application.ModelConfigLoader(), application.ModelLoader(), application.TemplatesEvaluator(), application.ApplicationConfig(), natsClient, application.LocalAIAssistant())
+	chatHandler := openai.ChatEndpoint(application.ModelConfigLoader(), application.ModelLoader(), application.TemplatesEvaluator(), application.ApplicationConfig(), natsClient, application.LocalAIAssistant(), application.PIIRedactor(), application.PIIEvents())
 	chatMiddleware := []echo.MiddlewareFunc{
 		usageMiddleware,
 		traceMiddleware,
