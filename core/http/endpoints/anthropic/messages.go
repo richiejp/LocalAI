@@ -10,10 +10,12 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/mudler/LocalAI/core/backend"
 	"github.com/mudler/LocalAI/core/config"
+	"github.com/mudler/LocalAI/core/http/auth"
 	mcpTools "github.com/mudler/LocalAI/core/http/endpoints/mcp"
 	openaiEndpoint "github.com/mudler/LocalAI/core/http/endpoints/openai"
 	"github.com/mudler/LocalAI/core/http/middleware"
 	"github.com/mudler/LocalAI/core/schema"
+	"github.com/mudler/LocalAI/core/services/routing/pii"
 	"github.com/mudler/LocalAI/core/templates"
 	"github.com/mudler/LocalAI/pkg/functions"
 	"github.com/mudler/LocalAI/pkg/model"
@@ -27,7 +29,7 @@ import (
 // @Param request body schema.AnthropicRequest true "query params"
 // @Success 200 {object} schema.AnthropicResponse "Response"
 // @Router /v1/messages [post]
-func MessagesEndpoint(cl *config.ModelConfigLoader, ml *model.ModelLoader, evaluator *templates.Evaluator, appConfig *config.ApplicationConfig, natsClient mcpTools.MCPNATSClient) echo.HandlerFunc {
+func MessagesEndpoint(cl *config.ModelConfigLoader, ml *model.ModelLoader, evaluator *templates.Evaluator, appConfig *config.ApplicationConfig, natsClient mcpTools.MCPNATSClient, piiRedactor *pii.Redactor, piiEvents pii.EventStore) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		id := uuid.New().String()
 
@@ -132,7 +134,7 @@ func MessagesEndpoint(cl *config.ModelConfigLoader, ml *model.ModelLoader, evalu
 		xlog.Debug("Anthropic Messages - Prompt (after templating)", "prompt", predInput)
 
 		if input.Stream {
-			return handleAnthropicStream(c, id, input, cfg, ml, cl, appConfig, predInput, openAIReq, funcs, shouldUseFn, mcpExecutor, evaluator)
+			return handleAnthropicStream(c, id, input, cfg, ml, cl, appConfig, predInput, openAIReq, funcs, shouldUseFn, mcpExecutor, evaluator, piiRedactor, piiEvents)
 		}
 
 		return handleAnthropicNonStream(c, id, input, cfg, ml, cl, appConfig, predInput, openAIReq, funcs, shouldUseFn, mcpExecutor, evaluator)
@@ -321,10 +323,36 @@ func handleAnthropicNonStream(c echo.Context, id string, input *schema.Anthropic
 	return sendAnthropicError(c, 500, "api_error", "MCP iteration limit reached")
 }
 
-func handleAnthropicStream(c echo.Context, id string, input *schema.AnthropicRequest, cfg *config.ModelConfig, ml *model.ModelLoader, cl *config.ModelConfigLoader, appConfig *config.ApplicationConfig, predInput string, openAIReq *schema.OpenAIRequest, funcs functions.Functions, shouldUseFn bool, mcpExecutor mcpTools.ToolExecutor, evaluator *templates.Evaluator) error {
+func handleAnthropicStream(c echo.Context, id string, input *schema.AnthropicRequest, cfg *config.ModelConfig, ml *model.ModelLoader, cl *config.ModelConfigLoader, appConfig *config.ApplicationConfig, predInput string, openAIReq *schema.OpenAIRequest, funcs functions.Functions, shouldUseFn bool, mcpExecutor mcpTools.ToolExecutor, evaluator *templates.Evaluator, piiRedactor *pii.Redactor, piiEvents pii.EventStore) error {
 	c.Response().Header().Set("Content-Type", "text/event-stream")
 	c.Response().Header().Set("Cache-Control", "no-cache")
 	c.Response().Header().Set("Connection", "keep-alive")
+
+	// Per-stream PII filter — same gating as the OpenAI chat path. The
+	// filter is wire-format-agnostic; we feed it the text portion of
+	// each text_delta and emit only what's safe to send. The filter
+	// holds back a tail of size MaxPatternLength-1 so a pattern split
+	// across chunk boundaries still gets masked. When PII is disabled
+	// for this model the filter is nil and emits flow unchanged.
+	var streamPIIFilter *pii.StreamFilter
+	if piiRedactor != nil && cfg.PIIIsEnabled() {
+		correlationID := c.Request().Header.Get("x-request-id")
+		userID := ""
+		if u := auth.GetUser(c); u != nil {
+			userID = u.ID
+		}
+		var overrides map[string]pii.Action
+		if raw := cfg.PIIPatternOverrides(); len(raw) > 0 {
+			overrides = make(map[string]pii.Action, len(raw))
+			for ovid, action := range raw {
+				switch pii.Action(action) {
+				case pii.ActionMask, pii.ActionBlock, pii.ActionRouteLocal:
+					overrides[ovid] = pii.Action(action)
+				}
+			}
+		}
+		streamPIIFilter = pii.NewStreamFilter(piiRedactor, overrides, piiEvents, correlationID, userID)
+	}
 
 	// Send message_start event
 	messageStart := schema.AnthropicStreamEvent{
@@ -405,6 +433,7 @@ func handleAnthropicStream(c echo.Context, id string, input *schema.AnthropicReq
 
 				if len(toolCalls) > toolCallsEmitted {
 					if !inToolCall && currentBlockIndex == 0 {
+						drainStreamPIIToText(c, streamPIIFilter, intPtr(currentBlockIndex))
 						sendAnthropicSSE(c, schema.AnthropicStreamEvent{
 							Type:  "content_block_stop",
 							Index: intPtr(currentBlockIndex),
@@ -445,14 +474,20 @@ func handleAnthropicStream(c echo.Context, id string, input *schema.AnthropicReq
 			}
 
 			if !inToolCall && token != "" {
-				sendAnthropicSSE(c, schema.AnthropicStreamEvent{
-					Type:  "content_block_delta",
-					Index: intPtr(0),
-					Delta: &schema.AnthropicStreamDelta{
-						Type: "text_delta",
-						Text: token,
-					},
-				})
+				out := token
+				if streamPIIFilter != nil {
+					out = streamPIIFilter.Push(token)
+				}
+				if out != "" {
+					sendAnthropicSSE(c, schema.AnthropicStreamEvent{
+						Type:  "content_block_delta",
+						Index: intPtr(0),
+						Delta: &schema.AnthropicStreamDelta{
+							Type: "text_delta",
+							Text: out,
+						},
+					})
+				}
 			}
 			return true
 		}
@@ -490,14 +525,20 @@ func handleAnthropicStream(c echo.Context, id string, input *schema.AnthropicReq
 			// didn't already stream it (autoparser clears raw text, so
 			// accumulatedContent will be empty in that case).
 			if deltaContent != "" && !inToolCall && accumulatedContent == "" {
-				sendAnthropicSSE(c, schema.AnthropicStreamEvent{
-					Type:  "content_block_delta",
-					Index: intPtr(0),
-					Delta: &schema.AnthropicStreamDelta{
-						Type: "text_delta",
-						Text: deltaContent,
-					},
-				})
+				out := deltaContent
+				if streamPIIFilter != nil {
+					out = streamPIIFilter.Push(deltaContent)
+				}
+				if out != "" {
+					sendAnthropicSSE(c, schema.AnthropicStreamEvent{
+						Type:  "content_block_delta",
+						Index: intPtr(0),
+						Delta: &schema.AnthropicStreamDelta{
+							Type: "text_delta",
+							Text: out,
+						},
+					})
+				}
 			}
 
 			// Emit tool_use blocks from ChatDeltas
@@ -505,6 +546,7 @@ func handleAnthropicStream(c echo.Context, id string, input *schema.AnthropicReq
 				collectedToolCalls = deltaToolCalls
 
 				if !inToolCall && currentBlockIndex == 0 {
+					drainStreamPIIToText(c, streamPIIFilter, intPtr(currentBlockIndex))
 					sendAnthropicSSE(c, schema.AnthropicStreamEvent{
 						Type:  "content_block_stop",
 						Index: intPtr(currentBlockIndex),
@@ -608,7 +650,9 @@ func handleAnthropicStream(c echo.Context, id string, input *schema.AnthropicReq
 		if !shouldUseFn && cfg.FunctionsConfig.AutomaticToolParsingFallback && accumulatedContent != "" && toolCallsEmitted == 0 {
 			parsed := functions.ParseFunctionCall(accumulatedContent, cfg.FunctionsConfig)
 			if len(parsed) > 0 {
-				// Close the text content block
+				// Close the text content block (after flushing any
+				// residual the streaming PII filter held back).
+				drainStreamPIIToText(c, streamPIIFilter, intPtr(currentBlockIndex))
 				sendAnthropicSSE(c, schema.AnthropicStreamEvent{
 					Type:  "content_block_stop",
 					Index: intPtr(currentBlockIndex),
@@ -648,8 +692,12 @@ func handleAnthropicStream(c echo.Context, id string, input *schema.AnthropicReq
 			}
 		}
 
-		// No MCP tools to execute, close stream
+		// No MCP tools to execute, close stream. drainStreamPIIToText
+		// flushes any residual the streaming PII filter held back as
+		// part of its trailing pattern-window before we close the
+		// text content block.
 		if !inToolCall {
+			drainStreamPIIToText(c, streamPIIFilter, intPtr(0))
 			sendAnthropicSSE(c, schema.AnthropicStreamEvent{
 				Type:  "content_block_stop",
 				Index: intPtr(0),
@@ -696,6 +744,30 @@ func convertFuncsToOpenAITools(funcs functions.Functions) []functions.Tool {
 }
 
 func intPtr(i int) *int { return &i }
+
+// drainStreamPIIToText flushes any residual the streaming PII filter
+// has been holding back as part of its trailing pattern-window, and
+// emits it as one final text_delta into the named block before the
+// caller closes that block. Drain is idempotent: calling it twice on
+// the same filter returns "" the second time. Safe to call with a nil
+// filter (no-op).
+func drainStreamPIIToText(c echo.Context, sf *pii.StreamFilter, index *int) {
+	if sf == nil {
+		return
+	}
+	residual := sf.Drain()
+	if residual == "" {
+		return
+	}
+	sendAnthropicSSE(c, schema.AnthropicStreamEvent{
+		Type:  "content_block_delta",
+		Index: index,
+		Delta: &schema.AnthropicStreamDelta{
+			Type: "text_delta",
+			Text: residual,
+		},
+	})
+}
 
 func sendAnthropicSSE(c echo.Context, event schema.AnthropicStreamEvent) {
 	data, err := json.Marshal(event)

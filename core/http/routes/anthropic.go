@@ -34,6 +34,8 @@ func RegisterAnthropicRoutes(app *echo.Echo,
 		application.TemplatesEvaluator(),
 		application.ApplicationConfig(),
 		natsClient,
+		application.PIIRedactor(),
+		application.PIIEvents(),
 	)
 
 	messagesMiddleware := []echo.MiddlewareFunc{

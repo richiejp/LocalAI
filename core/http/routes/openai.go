@@ -92,7 +92,7 @@ func RegisterOpenAIRoutes(app *echo.Echo,
 	app.POST("/edits", editHandler, editMiddleware...)
 
 	// completion
-	completionHandler := openai.CompletionEndpoint(application.ModelConfigLoader(), application.ModelLoader(), application.TemplatesEvaluator(), application.ApplicationConfig())
+	completionHandler := openai.CompletionEndpoint(application.ModelConfigLoader(), application.ModelLoader(), application.TemplatesEvaluator(), application.ApplicationConfig(), application.PIIRedactor(), application.PIIEvents())
 	completionMiddleware := []echo.MiddlewareFunc{
 		usageMiddleware,
 		traceMiddleware,
