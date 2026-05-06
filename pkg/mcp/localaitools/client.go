@@ -85,4 +85,13 @@ type LocalAIClient interface {
 	// TestPIIRedaction dry-runs the redactor against text. No event
 	// is recorded.
 	TestPIIRedaction(ctx context.Context, req PIIRedactTestRequest) (*PIIRedactTestResult, error)
+	// SetPIIPatternAction mutates the named pattern's action in-process.
+	// Transient — restored to YAML defaults on restart. Admin-required.
+	SetPIIPatternAction(ctx context.Context, req PIIPatternActionUpdate) error
+
+	// ---- Middleware admin ----
+	// GetMiddlewareStatus returns the aggregated state surfaced on the
+	// /app/middleware page: active PII patterns, per-model resolved
+	// enabled state, recent event count, router placeholder.
+	GetMiddlewareStatus(ctx context.Context) (*MiddlewareStatus, error)
 }

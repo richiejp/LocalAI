@@ -6,10 +6,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"testing"
 
 	"github.com/labstack/echo/v4"
 	"github.com/mudler/LocalAI/core/http/auth"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 )
 
 // fakeRequest is the simplest possible parsed-request shape: a list of
@@ -53,182 +55,255 @@ func setRequestOnContext(req *fakeRequest) echo.MiddlewareFunc {
 	}
 }
 
-func newTestRedactor(t *testing.T, ids ...string) *Redactor {
-	t.Helper()
-	patterns, err := Compile(pick(DefaultPatterns(), ids))
-	if err != nil {
-		t.Fatalf("compile: %v", err)
+// fakeModelPIIConfig satisfies the duck-typed ModelPIIConfig interface
+// the middleware expects on the echo context. The real implementation
+// lives on *config.ModelConfig; using a fake here keeps these tests
+// out of the core/config import graph.
+type fakeModelPIIConfig struct {
+	enabled   bool
+	overrides map[string]string
+}
+
+func (f fakeModelPIIConfig) PIIIsEnabled() bool                     { return f.enabled }
+func (f fakeModelPIIConfig) PIIPatternOverrides() map[string]string { return f.overrides }
+
+// withModelConfig wires a ModelPIIConfig onto the context so the
+// middleware's per-model gate doesn't fail-closed during tests. Pass
+// enabled=true for the default test path; explicit-false tests should
+// use the gating spec further down instead.
+func withModelConfig(cfg fakeModelPIIConfig) echo.MiddlewareFunc {
+	return func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			c.Set(ctxKeyModelConfig, cfg)
+			return next(c)
+		}
 	}
+}
+
+func newTestRedactor(ids ...string) *Redactor {
+	patterns, err := Compile(pick(DefaultPatterns(), ids))
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "compile")
 	return NewRedactor(patterns)
 }
 
-func TestRequestMiddlewareMasksEmail(t *testing.T) {
-	red := newTestRedactor(t, "email")
-	store := NewMemoryEventStore(0)
-	defer store.Close()
-	user := &auth.User{ID: "user-1", Name: "alice"}
+var _ = Describe("RequestMiddleware", func() {
+	It("masks email", func() {
+		red := newTestRedactor("email")
+		store := NewMemoryEventStore(0)
+		defer func() { _ = store.Close() }()
+		user := &auth.User{ID: "user-1", Name: "alice"}
 
-	body := &fakeRequest{Messages: []string{"contact me at alice@example.com"}}
-	mw := RequestMiddleware(red, store, fakeAdapter(), nil)
+		body := &fakeRequest{Messages: []string{"contact me at alice@example.com"}}
+		mw := RequestMiddleware(red, store, fakeAdapter(), nil)
 
-	e := echo.New()
-	e.POST("/chat", func(c echo.Context) error {
-		return c.JSON(http.StatusOK, map[string]string{"ok": "yes"})
-	}, setRequestOnContext(body), mw, func(next echo.HandlerFunc) echo.HandlerFunc {
-		// Inject the user as if upstream auth ran.
-		return func(c echo.Context) error {
-			c.Set("auth_user", user)
-			return next(c)
-		}
+		e := echo.New()
+		e.POST("/chat", func(c echo.Context) error {
+			return c.JSON(http.StatusOK, map[string]string{"ok": "yes"})
+		}, setRequestOnContext(body), withModelConfig(fakeModelPIIConfig{enabled: true}), mw, func(next echo.HandlerFunc) echo.HandlerFunc {
+			// Inject the user as if upstream auth ran.
+			return func(c echo.Context) error {
+				c.Set("auth_user", user)
+				return next(c)
+			}
+		})
+
+		req := httptest.NewRequest(http.MethodPost, "/chat", strings.NewReader(`{}`))
+		w := httptest.NewRecorder()
+		e.ServeHTTP(w, req)
+
+		Expect(w.Code).To(Equal(http.StatusOK), "body=%s", w.Body.String())
+		Expect(body.Messages[0]).NotTo(ContainSubstring("alice@example.com"), "request body should be redacted in place")
+		Expect(body.Messages[0]).To(ContainSubstring("[REDACTED:email]"))
+
+		events, err := store.List(context.Background(), ListQuery{Limit: 100})
+		Expect(err).NotTo(HaveOccurred(), "list events")
+		Expect(events).To(HaveLen(1))
+		Expect(events[0].PatternID).To(Equal("email"))
+		Expect(events[0].Direction).To(Equal(DirectionIn))
 	})
 
-	req := httptest.NewRequest(http.MethodPost, "/chat", strings.NewReader(`{}`))
-	w := httptest.NewRecorder()
-	e.ServeHTTP(w, req)
+	It("blocks api key", func() {
+		red := newTestRedactor("api_key_prefix")
+		store := NewMemoryEventStore(0)
+		defer func() { _ = store.Close() }()
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("status: got %d want 200; body=%s", w.Code, w.Body.String())
-	}
-	if strings.Contains(body.Messages[0], "alice@example.com") {
-		t.Errorf("request body should be redacted in place, got %q", body.Messages[0])
-	}
-	if !strings.Contains(body.Messages[0], "[REDACTED:email]") {
-		t.Errorf("expected mask placeholder, got %q", body.Messages[0])
-	}
+		body := &fakeRequest{Messages: []string{"my key is sk-abcdefghijklmnopqrstuvwxyz0123456789"}}
+		mw := RequestMiddleware(red, store, fakeAdapter(), nil)
 
-	events, err := store.List(context.Background(), ListQuery{Limit: 100})
-	if err != nil {
-		t.Fatalf("list events: %v", err)
-	}
-	if len(events) != 1 {
-		t.Errorf("expected 1 event recorded, got %d", len(events))
-	}
-	if events[0].PatternID != "email" || events[0].Direction != DirectionIn {
-		t.Errorf("event mismatch: %+v", events[0])
-	}
-}
+		e := echo.New()
+		handlerCalled := false
+		e.POST("/chat", func(c echo.Context) error {
+			handlerCalled = true
+			return c.JSON(http.StatusOK, map[string]string{"ok": "yes"})
+		}, setRequestOnContext(body), withModelConfig(fakeModelPIIConfig{enabled: true}), mw)
 
-func TestRequestMiddlewareBlocksApiKey(t *testing.T) {
-	red := newTestRedactor(t, "api_key_prefix")
-	store := NewMemoryEventStore(0)
-	defer store.Close()
+		req := httptest.NewRequest(http.MethodPost, "/chat", strings.NewReader(`{}`))
+		w := httptest.NewRecorder()
+		e.ServeHTTP(w, req)
 
-	body := &fakeRequest{Messages: []string{"my key is sk-abcdefghijklmnopqrstuvwxyz0123456789"}}
-	mw := RequestMiddleware(red, store, fakeAdapter(), nil)
+		Expect(w.Code).To(Equal(http.StatusBadRequest), "expected 400 on block; body=%s", w.Body.String())
+		Expect(handlerCalled).To(BeFalse(), "handler must not run when request is blocked")
+		// Ensure the matched value never appears in the response body.
+		Expect(w.Body.String()).NotTo(ContainSubstring("abcdefghijklmnopqrstuvwxyz0123456789"), "blocked response leaks the matched value")
 
-	e := echo.New()
-	handlerCalled := false
-	e.POST("/chat", func(c echo.Context) error {
-		handlerCalled = true
-		return c.JSON(http.StatusOK, map[string]string{"ok": "yes"})
-	}, setRequestOnContext(body), mw)
+		var resp map[string]any
+		Expect(json.Unmarshal(w.Body.Bytes(), &resp)).To(Succeed())
+		errBlock, ok := resp["error"].(map[string]any)
+		Expect(ok).To(BeTrue())
+		Expect(errBlock["type"]).To(Equal("pii_blocked"))
+	})
 
-	req := httptest.NewRequest(http.MethodPost, "/chat", strings.NewReader(`{}`))
-	w := httptest.NewRecorder()
-	e.ServeHTTP(w, req)
+	It("route_local sets context flag", func() {
+		patterns, _ := Compile([]Pattern{{
+			ID: "email", Description: "Email", Action: ActionRouteLocal, MaxMatchLength: 254,
+		}})
+		red := NewRedactor(patterns)
+		store := NewMemoryEventStore(0)
+		defer func() { _ = store.Close() }()
 
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400 on block, got %d; body=%s", w.Code, w.Body.String())
-	}
-	if handlerCalled {
-		t.Errorf("handler must not run when request is blocked")
-	}
-	// Ensure the matched value never appears in the response body.
-	if strings.Contains(w.Body.String(), "abcdefghijklmnopqrstuvwxyz0123456789") {
-		t.Errorf("blocked response leaks the matched value: %s", w.Body.String())
-	}
+		body := &fakeRequest{Messages: []string{"hi at alice@example.com"}}
+		mw := RequestMiddleware(red, store, fakeAdapter(), nil)
 
-	var resp map[string]any
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	errBlock, ok := resp["error"].(map[string]any)
-	if !ok || errBlock["type"] != "pii_blocked" {
-		t.Errorf("expected pii_blocked error type, got %v", resp)
-	}
-}
+		e := echo.New()
+		var observedLocalOnly bool
+		e.POST("/chat", func(c echo.Context) error {
+			v, _ := c.Get(ctxKeyLocalOnly).(bool)
+			observedLocalOnly = v
+			return c.JSON(http.StatusOK, map[string]string{"ok": "yes"})
+		}, setRequestOnContext(body), withModelConfig(fakeModelPIIConfig{enabled: true}), mw)
 
-func TestRequestMiddlewareRouteLocalSetsContextFlag(t *testing.T) {
-	patterns, _ := Compile([]Pattern{{
-		ID: "email", Description: "Email", Action: ActionRouteLocal, MaxMatchLength: 254,
-	}})
-	red := NewRedactor(patterns)
-	store := NewMemoryEventStore(0)
-	defer store.Close()
+		req := httptest.NewRequest(http.MethodPost, "/chat", strings.NewReader(`{}`))
+		w := httptest.NewRecorder()
+		e.ServeHTTP(w, req)
 
-	body := &fakeRequest{Messages: []string{"hi at alice@example.com"}}
-	mw := RequestMiddleware(red, store, fakeAdapter(), nil)
+		Expect(w.Code).To(Equal(http.StatusOK))
+		Expect(observedLocalOnly).To(BeTrue(), "ctxKeyLocalOnly should be true on route_local match")
+		// route_local does NOT mutate the body — the model still sees the email.
+		Expect(body.Messages[0]).To(ContainSubstring("alice@example.com"), "route_local should leave text intact")
+	})
 
-	e := echo.New()
-	var observedLocalOnly bool
-	e.POST("/chat", func(c echo.Context) error {
-		v, _ := c.Get(ctxKeyLocalOnly).(bool)
-		observedLocalOnly = v
-		return c.JSON(http.StatusOK, map[string]string{"ok": "yes"})
-	}, setRequestOnContext(body), mw)
+	It("no match passes through", func() {
+		red := newTestRedactor()
+		store := NewMemoryEventStore(0)
+		defer func() { _ = store.Close() }()
 
-	req := httptest.NewRequest(http.MethodPost, "/chat", strings.NewReader(`{}`))
-	w := httptest.NewRecorder()
-	e.ServeHTTP(w, req)
+		body := &fakeRequest{Messages: []string{"perfectly innocent text"}}
+		mw := RequestMiddleware(red, store, fakeAdapter(), nil)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("status: %d", w.Code)
-	}
-	if !observedLocalOnly {
-		t.Errorf("ctxKeyLocalOnly should be true on route_local match")
-	}
-	// route_local does NOT mutate the body — the model still sees the email.
-	if !strings.Contains(body.Messages[0], "alice@example.com") {
-		t.Errorf("route_local should leave text intact, got %q", body.Messages[0])
-	}
-}
+		e := echo.New()
+		e.POST("/chat", func(c echo.Context) error {
+			return c.JSON(http.StatusOK, map[string]string{"ok": "yes"})
+		}, setRequestOnContext(body), withModelConfig(fakeModelPIIConfig{enabled: true}), mw)
 
-func TestRequestMiddlewareNoMatchPassesThrough(t *testing.T) {
-	red := newTestRedactor(t)
-	store := NewMemoryEventStore(0)
-	defer store.Close()
+		req := httptest.NewRequest(http.MethodPost, "/chat", strings.NewReader(`{}`))
+		w := httptest.NewRecorder()
+		e.ServeHTTP(w, req)
 
-	body := &fakeRequest{Messages: []string{"perfectly innocent text"}}
-	mw := RequestMiddleware(red, store, fakeAdapter(), nil)
+		Expect(w.Code).To(Equal(http.StatusOK))
+		Expect(body.Messages[0]).To(Equal("perfectly innocent text"), "body should be untouched")
+		events, _ := store.List(context.Background(), ListQuery{Limit: 100})
+		Expect(events).To(BeEmpty(), "expected 0 events on no-match input")
+	})
 
-	e := echo.New()
-	e.POST("/chat", func(c echo.Context) error {
-		return c.JSON(http.StatusOK, map[string]string{"ok": "yes"})
-	}, setRequestOnContext(body), mw)
+	It("skips when model config disabled", func() {
+		// Per-model gating is the new contract: a model with PIIIsEnabled
+		// returning false must bypass redaction entirely, even if the
+		// global redactor has matching patterns.
+		red := newTestRedactor("email")
+		store := NewMemoryEventStore(0)
+		defer func() { _ = store.Close() }()
 
-	req := httptest.NewRequest(http.MethodPost, "/chat", strings.NewReader(`{}`))
-	w := httptest.NewRecorder()
-	e.ServeHTTP(w, req)
+		body := &fakeRequest{Messages: []string{"contact alice@example.com"}}
+		mw := RequestMiddleware(red, store, fakeAdapter(), nil)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("status: %d", w.Code)
-	}
-	if body.Messages[0] != "perfectly innocent text" {
-		t.Errorf("body should be untouched, got %q", body.Messages[0])
-	}
-	events, _ := store.List(context.Background(), ListQuery{Limit: 100})
-	if len(events) != 0 {
-		t.Errorf("expected 0 events on no-match input, got %d", len(events))
-	}
-}
+		e := echo.New()
+		e.POST("/chat", func(c echo.Context) error {
+			return c.JSON(http.StatusOK, map[string]string{"ok": "yes"})
+		}, setRequestOnContext(body), withModelConfig(fakeModelPIIConfig{enabled: false}), mw)
 
-func TestRequestMiddlewareNilRedactorIsPassthrough(t *testing.T) {
-	body := &fakeRequest{Messages: []string{"alice@example.com"}}
-	mw := RequestMiddleware(nil, nil, fakeAdapter(), nil)
+		req := httptest.NewRequest(http.MethodPost, "/chat", strings.NewReader(`{}`))
+		w := httptest.NewRecorder()
+		e.ServeHTTP(w, req)
 
-	e := echo.New()
-	e.POST("/chat", func(c echo.Context) error {
-		return c.JSON(http.StatusOK, map[string]string{"ok": "yes"})
-	}, setRequestOnContext(body), mw)
+		Expect(w.Code).To(Equal(http.StatusOK))
+		Expect(body.Messages[0]).To(ContainSubstring("alice@example.com"), "disabled model must not redact")
+		events, _ := store.List(context.Background(), ListQuery{Limit: 100})
+		Expect(events).To(BeEmpty(), "disabled model must produce no events")
+	})
 
-	req := httptest.NewRequest(http.MethodPost, "/chat", strings.NewReader(`{}`))
-	w := httptest.NewRecorder()
-	e.ServeHTTP(w, req)
+	It("fails closed without model config", func() {
+		// Routes that wire the middleware before SetModelAndConfig, or
+		// non-chat routes lacking a model, hit this path. The contract
+		// is fail-closed: pass through without redaction so a missing
+		// model can't accidentally leak through global defaults.
+		red := newTestRedactor("email")
+		store := NewMemoryEventStore(0)
+		defer func() { _ = store.Close() }()
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("status: %d", w.Code)
-	}
-	if body.Messages[0] != "alice@example.com" {
-		t.Errorf("nil redactor must be a no-op, got %q", body.Messages[0])
-	}
-}
+		body := &fakeRequest{Messages: []string{"contact alice@example.com"}}
+		mw := RequestMiddleware(red, store, fakeAdapter(), nil)
+
+		e := echo.New()
+		// Note: no withModelConfig in the chain.
+		e.POST("/chat", func(c echo.Context) error {
+			return c.JSON(http.StatusOK, map[string]string{"ok": "yes"})
+		}, setRequestOnContext(body), mw)
+
+		req := httptest.NewRequest(http.MethodPost, "/chat", strings.NewReader(`{}`))
+		w := httptest.NewRecorder()
+		e.ServeHTTP(w, req)
+
+		Expect(w.Code).To(Equal(http.StatusOK))
+		Expect(body.Messages[0]).To(ContainSubstring("alice@example.com"), "missing ModelPIIConfig should fail-closed (no redaction)")
+	})
+
+	It("applies per-model override", func() {
+		// email defaults to mask. A per-model override upgrades it to
+		// block. The middleware short-circuits with 400, the request
+		// body is never touched, and the events log records action=block.
+		red := newTestRedactor("email")
+		store := NewMemoryEventStore(0)
+		defer func() { _ = store.Close() }()
+
+		body := &fakeRequest{Messages: []string{"contact alice@example.com"}}
+		mw := RequestMiddleware(red, store, fakeAdapter(), nil)
+
+		e := echo.New()
+		handlerCalled := false
+		e.POST("/chat", func(c echo.Context) error {
+			handlerCalled = true
+			return c.JSON(http.StatusOK, map[string]string{"ok": "yes"})
+		}, setRequestOnContext(body),
+			withModelConfig(fakeModelPIIConfig{
+				enabled:   true,
+				overrides: map[string]string{"email": "block"},
+			}), mw)
+
+		req := httptest.NewRequest(http.MethodPost, "/chat", strings.NewReader(`{}`))
+		w := httptest.NewRecorder()
+		e.ServeHTTP(w, req)
+
+		Expect(w.Code).To(Equal(http.StatusBadRequest), "expected 400 from override-block; body=%s", w.Body.String())
+		Expect(handlerCalled).To(BeFalse(), "handler must not run when override blocks")
+		events, _ := store.List(context.Background(), ListQuery{Limit: 100})
+		Expect(events).To(HaveLen(1))
+		Expect(events[0].Action).To(Equal(ActionBlock), "event must record the resolved (override) action")
+	})
+
+	It("nil redactor is passthrough", func() {
+		body := &fakeRequest{Messages: []string{"alice@example.com"}}
+		mw := RequestMiddleware(nil, nil, fakeAdapter(), nil)
+
+		e := echo.New()
+		e.POST("/chat", func(c echo.Context) error {
+			return c.JSON(http.StatusOK, map[string]string{"ok": "yes"})
+		}, setRequestOnContext(body), withModelConfig(fakeModelPIIConfig{enabled: true}), mw)
+
+		req := httptest.NewRequest(http.MethodPost, "/chat", strings.NewReader(`{}`))
+		w := httptest.NewRecorder()
+		e.ServeHTTP(w, req)
+
+		Expect(w.Code).To(Equal(http.StatusOK))
+		Expect(body.Messages[0]).To(Equal("alice@example.com"), "nil redactor must be a no-op")
+	})
+})

@@ -116,4 +116,45 @@ func RegisterPIIRoutes(e *echo.Echo, app *application.Application) {
 			"local_only": res.LocalOnly,
 		})
 	})
+
+	// PutPIIPatternActionEndpoint godoc
+	// @Summary Change a pattern's action in-process
+	// @Description Mutates the named pattern's action (mask|block|route_local). Transient — restored to YAML defaults on restart. Admin-only.
+	// @Tags pii
+	// @Accept json
+	// @Produce json
+	// @Param id path string true "Pattern id"
+	// @Param body body map[string]string true "JSON {\"action\":\"mask|block|route_local\"}"
+	// @Success 200 {object} map[string]interface{}
+	// @Router /api/pii/patterns/{id} [put]
+	e.PUT("/api/pii/patterns/:id", func(c echo.Context) error {
+		viewer := resolveUsageUser(c, app)
+		if viewer == nil {
+			return c.JSON(http.StatusUnauthorized, map[string]string{"error": "not authenticated"})
+		}
+		if viewer.Role != auth.RoleAdmin {
+			return c.JSON(http.StatusForbidden, map[string]string{"error": "admin access required"})
+		}
+
+		id := c.Param("id")
+		if id == "" {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "pattern id is required"})
+		}
+		var body struct {
+			Action string `json:"action"`
+		}
+		if err := c.Bind(&body); err != nil {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+		}
+		if err := app.PIIRedactor().SetAction(id, pii.Action(body.Action)); err != nil {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+		}
+		return c.JSON(http.StatusOK, map[string]any{
+			"id":     id,
+			"action": body.Action,
+			// Transient by design — admins relying on persistence should
+			// edit --pii-config YAML and restart instead.
+			"persisted": false,
+		})
+	})
 }

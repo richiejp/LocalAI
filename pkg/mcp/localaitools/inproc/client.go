@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/mudler/LocalAI/core/config"
@@ -657,6 +658,61 @@ func (c *Client) GetPIIEvents(ctx context.Context, q localaitools.PIIEventsQuery
 		})
 	}
 	return out, nil
+}
+
+func (c *Client) SetPIIPatternAction(_ context.Context, req localaitools.PIIPatternActionUpdate) error {
+	if c.PIIRedactor == nil {
+		return errors.New("PII filter is disabled")
+	}
+	if req.ID == "" {
+		return errors.New("pattern id is required")
+	}
+	return c.PIIRedactor.SetAction(req.ID, pii.Action(req.Action))
+}
+
+func (c *Client) GetMiddlewareStatus(ctx context.Context) (*localaitools.MiddlewareStatus, error) {
+	router := localaitools.MiddlewareRouterStatus{
+		Configured: false,
+		Models:     []string{},
+		Note:       "Intelligent routing is not yet implemented.",
+	}
+	piiSection := localaitools.MiddlewarePIIStatus{
+		EnabledGlobally: c.PIIRedactor != nil,
+		Patterns:        []localaitools.PIIPattern{},
+		Models:          []localaitools.MiddlewarePIIModel{},
+	}
+	if c.PIIRedactor == nil {
+		piiSection.Reason = "--disable-pii"
+		return &localaitools.MiddlewareStatus{PII: piiSection, Router: router}, nil
+	}
+	piiSection.DefaultEnabledForBackends = []string{"proxy-*"}
+	for _, p := range c.PIIRedactor.Patterns() {
+		piiSection.Patterns = append(piiSection.Patterns, localaitools.PIIPattern{
+			ID:             p.ID,
+			Description:    p.Description,
+			Action:         string(p.Action),
+			MaxMatchLength: p.MaxMatchLength,
+		})
+	}
+	if c.ConfigLoader != nil {
+		for _, cfg := range c.ConfigLoader.GetAllModelsConfigs() {
+			cfg := cfg
+			piiSection.Models = append(piiSection.Models, localaitools.MiddlewarePIIModel{
+				Name:              cfg.Name,
+				Backend:           cfg.Backend,
+				Enabled:           cfg.PIIIsEnabled(),
+				Explicit:          cfg.PII.Enabled != nil,
+				DefaultForBackend: strings.HasPrefix(cfg.Backend, "proxy-"),
+				Overrides:         cfg.PIIPatternOverrides(),
+			})
+		}
+	}
+	if c.PIIEvents != nil {
+		if n, err := c.PIIEvents.Count(ctx); err == nil {
+			piiSection.RecentEventCount = n
+		}
+	}
+	return &localaitools.MiddlewareStatus{PII: piiSection, Router: router}, nil
 }
 
 func (c *Client) TestPIIRedaction(_ context.Context, req localaitools.PIIRedactTestRequest) (*localaitools.PIIRedactTestResult, error) {

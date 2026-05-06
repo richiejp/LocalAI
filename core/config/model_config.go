@@ -97,6 +97,64 @@ type ModelConfig struct {
 
 	MCP   MCPConfig   `yaml:"mcp,omitempty" json:"mcp,omitempty"`
 	Agent AgentConfig `yaml:"agent,omitempty" json:"agent,omitempty"`
+	PII   PIIConfig   `yaml:"pii,omitempty" json:"pii,omitempty"`
+}
+
+// @Description PII filtering configuration. PII redaction is per-model so
+// that local models don't pay the latency or behaviour change of regex
+// scanning, while cloud-bound traffic (proxy-* backends) can default to
+// on. Setting Enabled explicitly always wins over the backend default.
+type PIIConfig struct {
+	// Enabled toggles redaction for this model. When unset (zero value),
+	// the resolved default depends on Backend: any backend whose name
+	// starts with "proxy-" defaults to true, everything else to false.
+	// A pointer is used so the absence of the YAML key is distinguishable
+	// from explicit false.
+	Enabled *bool `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+
+	// Patterns lets a model upgrade or downgrade individual pattern
+	// actions (mask | block | route_local) relative to the global
+	// defaults loaded from --pii-config / DefaultPatterns. Pattern IDs
+	// not listed inherit the global action. The regex itself stays
+	// global — only the action is settable per-model.
+	Patterns []PIIPatternOverride `yaml:"patterns,omitempty" json:"patterns,omitempty"`
+}
+
+// @Description Per-model action override for a single PII pattern.
+type PIIPatternOverride struct {
+	ID     string `yaml:"id" json:"id"`
+	Action string `yaml:"action" json:"action"`
+}
+
+// PIIIsEnabled returns the resolved PII state for this model. Single
+// source of truth for the gating decision so the middleware and the
+// /api/middleware/status admin view agree.
+func (c *ModelConfig) PIIIsEnabled() bool {
+	if c.PII.Enabled != nil {
+		return *c.PII.Enabled
+	}
+	return strings.HasPrefix(c.Backend, "proxy-")
+}
+
+// PIIPatternOverrides returns the per-pattern action overrides as a map
+// keyed by pattern ID. The values are the raw action strings — the pii
+// package validates and converts them.
+//
+// Returned via the documented modelPIIConfig interface in
+// core/services/routing/pii/middleware.go without taking a config
+// dependency on this package.
+func (c *ModelConfig) PIIPatternOverrides() map[string]string {
+	if len(c.PII.Patterns) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(c.PII.Patterns))
+	for _, p := range c.PII.Patterns {
+		if p.ID == "" {
+			continue
+		}
+		out[p.ID] = p.Action
+	}
+	return out
 }
 
 // @Description MCP configuration

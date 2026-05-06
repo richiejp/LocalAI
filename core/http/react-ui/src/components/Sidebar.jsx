@@ -71,6 +71,7 @@ const sections = [
     items: [
       { path: '/app/usage', icon: 'fas fa-chart-bar', labelKey: 'items.usage' },
       { path: '/app/users', icon: 'fas fa-users', labelKey: 'items.users', adminOnly: true, authOnly: true },
+      { path: '/app/middleware', icon: 'fas fa-shield-halved', labelKey: 'items.middleware', adminOnly: true },
       { path: '/app/backends', icon: 'fas fa-server', labelKey: 'items.backends', adminOnly: true },
       { path: '/app/traces', icon: 'fas fa-chart-line', labelKey: 'items.traces', adminOnly: true },
       { path: '/app/nodes', icon: 'fas fa-network-wired', labelKey: 'items.nodes', adminOnly: true, feature: 'distributed' },

@@ -13,6 +13,8 @@ import (
 	mcpTools "github.com/mudler/LocalAI/core/http/endpoints/mcp"
 	"github.com/mudler/LocalAI/core/http/middleware"
 	"github.com/mudler/LocalAI/core/schema"
+	"github.com/mudler/LocalAI/core/services/routing/pii"
+	"github.com/mudler/LocalAI/core/services/routing/piiadapter"
 	"github.com/mudler/xlog"
 )
 
@@ -40,6 +42,12 @@ func RegisterAnthropicRoutes(app *echo.Echo,
 		re.BuildFilteredFirstAvailableDefaultModel(config.BuildUsecaseFilterFn(config.FLAG_CHAT)),
 		re.SetModelAndConfig(func() schema.LocalAIRequest { return new(schema.AnthropicRequest) }),
 		setAnthropicRequestContext(application.ApplicationConfig()),
+		// PII redaction runs innermost (after the request is parsed and
+		// the model config is on the context). The middleware reads
+		// ModelConfig.PIIIsEnabled() to decide whether to scan; the
+		// default is off for non-proxy backends, so a /v1/messages call
+		// targeting a local model passes through unchanged.
+		pii.RequestMiddleware(application.PIIRedactor(), application.PIIEvents(), piiadapter.Anthropic(), application.FallbackUser()),
 	}
 
 	// Main Anthropic endpoint

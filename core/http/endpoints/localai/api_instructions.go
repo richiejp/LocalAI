@@ -102,7 +102,13 @@ var instructionDefs = []instructionDef{
 		Name:        "pii-filtering",
 		Description: "Inspect and tune the regex PII filter applied to chat requests",
 		Tags:        []string{"pii"},
-		Intro:       "GET /api/pii/patterns lists the active pattern set with each one's action (mask, block, route_local). GET /api/pii/events returns recent redaction events filtered by correlation_id / user_id / pattern_id (admin or local-user only). POST /api/pii/test dry-runs the redactor against an admin-supplied string. Default patterns: email, phone, SSN, credit card (Luhn), IPv4, common API key prefixes (sk-, pk-, ghp_, github_pat_). Override per-pattern actions via --pii-config pii.yaml; --disable-pii turns the filter off.",
+		Intro:       "GET /api/pii/patterns lists the active pattern set with each one's action (mask, block, route_local). GET /api/pii/events returns recent redaction events filtered by correlation_id / user_id / pattern_id (admin or local-user only). POST /api/pii/test dry-runs the redactor against an admin-supplied string. Default patterns: email, phone, SSN, credit card (Luhn), IPv4, common API key prefixes (sk-, pk-, ghp_, github_pat_). PII is per-model: by default it is OFF for non-proxy backends and ON for backends starting with proxy-* (cloud passthroughs). Opt in with `pii: { enabled: true }` in a model's YAML; use `pii: { patterns: [{id, action}] }` to upgrade or downgrade individual actions for that model. Override global default actions via --pii-config pii.yaml; --disable-pii turns the filter off entirely.",
+	},
+	{
+		Name:        "middleware-admin",
+		Description: "Inspect and configure the routing-module middleware (PII filter and routing)",
+		Tags:        []string{"middleware", "pii", "router"},
+		Intro:       "GET /api/middleware/status is the single round-trip the /app/middleware admin page reads to render the current state: active PII patterns and their actions, every model's resolved enabled/override state, recent event count, and a placeholder for routing (subsystem 2 not yet shipped). Admin-only (the synthetic local user is admin in no-auth mode). PUT /api/pii/patterns/:id changes a pattern's action in-process — TRANSIENT, lost on restart. To persist, edit --pii-config YAML. The same surface is exposed as MCP tools (`get_middleware_status`, `set_pii_pattern_action`) for agent-driven configuration.",
 	},
 }
 

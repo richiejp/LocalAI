@@ -22,8 +22,27 @@ const (
 	ctxKeyCorrelationID    = "routing.correlation_id"
 	ctxKeyPIIEventID       = "routing.pii_event_id"
 	ctxKeyLocalOnly        = "routing.local_only"
+	// Must match the constants in core/http/middleware/request.go.
+	// Echoing them across packages would create an import cycle
+	// (http/middleware imports this package). Drift is caught by
+	// integration tests against the chat route.
 	ctxKeyParsedRequest    = "LOCALAI_REQUEST"
+	ctxKeyModelConfig      = "MODEL_CONFIG"
 )
+
+// ModelPIIConfig is the duck-typed view this middleware needs of the
+// per-model PII configuration carried on the echo context. *config.ModelConfig
+// satisfies it via PIIIsEnabled / PIIPatternOverrides; the indirection
+// keeps the pii package from importing core/config.
+//
+// Consumers of the override map: the action returned from PIIPatternOverrides
+// is the raw YAML string (e.g. "block"). Validation against the canonical
+// ActionMask/Block/RouteLocal constants happens here, so a typo in a model
+// YAML logs and is ignored rather than panicking.
+type ModelPIIConfig interface {
+	PIIIsEnabled() bool
+	PIIPatternOverrides() map[string]string
+}
 
 // ScannedText is one piece of user text from the request. Index is
 // opaque to the middleware — the Adapter implementation uses it to
@@ -74,6 +93,26 @@ func RequestMiddleware(redactor *Redactor, store EventStore, adapter Adapter, fa
 				return next(c)
 			}
 
+			// Per-model gating: redaction is opt-in per model. If the
+			// resolved config disables PII for this model (the default
+			// for non-proxy backends), pass through immediately. We do
+			// this before parsing the request so a disabled model
+			// doesn't pay the regex scan cost.
+			if cfg, ok := c.Get(ctxKeyModelConfig).(ModelPIIConfig); ok {
+				if !cfg.PIIIsEnabled() {
+					return next(c)
+				}
+			} else {
+				// No ModelPIIConfig on context → fail-closed: skip
+				// redaction. This protects routes that wire the
+				// middleware before SetModelAndConfig runs (or non-chat
+				// routes that don't carry a model). The middleware was
+				// previously fail-open, applying the global redactor
+				// unconditionally; the new contract is per-model
+				// opt-in, and a missing model is treated as disabled.
+				return next(c)
+			}
+
 			parsed := c.Get(ctxKeyParsedRequest)
 			if parsed == nil {
 				return next(c)
@@ -89,6 +128,26 @@ func RequestMiddleware(redactor *Redactor, store EventStore, adapter Adapter, fa
 			}
 			correlationID, _ := c.Get(ctxKeyCorrelationID).(string)
 
+			// Resolve per-model action overrides once per request. The
+			// raw map is YAML strings; convert to the typed Action set
+			// and silently drop unknown values rather than failing the
+			// request — model YAML typos shouldn't take chat down.
+			var overrides map[string]Action
+			if cfg, ok := c.Get(ctxKeyModelConfig).(ModelPIIConfig); ok {
+				if raw := cfg.PIIPatternOverrides(); len(raw) > 0 {
+					overrides = make(map[string]Action, len(raw))
+					for id, action := range raw {
+						switch Action(action) {
+						case ActionMask, ActionBlock, ActionRouteLocal:
+							overrides[id] = Action(action)
+						default:
+							xlog.Warn("pii: ignoring unknown action in per-model override",
+								"pattern", id, "action", action)
+						}
+					}
+				}
+			}
+
 			texts := adapter.Scan(parsed)
 			updates := make([]ScannedText, 0, len(texts))
 			var blocked bool
@@ -99,15 +158,18 @@ func RequestMiddleware(redactor *Redactor, store EventStore, adapter Adapter, fa
 				if st.Text == "" {
 					continue
 				}
-				res := redactor.Redact(st.Text)
+				res := redactor.RedactWithOverrides(st.Text, overrides)
 				if len(res.Spans) == 0 {
 					continue
 				}
 
 				// Persist one event per span so admins can see exactly
-				// which patterns fired in which positions.
+				// which patterns fired in which positions. The action
+				// recorded is the resolved one (after override), so the
+				// events log reflects what actually happened to the
+				// request, not the global default.
 				for _, span := range res.Spans {
-					action := actionForPattern(redactor.Patterns(), span.Pattern)
+					action := actionForSpan(redactor.Patterns(), span.Pattern, overrides)
 					ev := PIIEvent{
 						ID:            newEventID(),
 						CorrelationID: correlationID,
@@ -178,6 +240,17 @@ func actionForPattern(patterns []Pattern, id string) Action {
 		}
 	}
 	return ActionMask
+}
+
+// actionForSpan returns the resolved action for a span, preferring a
+// per-request override over the pattern's stored action. Used so the
+// PIIEvent log reflects the action that actually fired (e.g., a model
+// upgraded email from mask to block — the event row says "block").
+func actionForSpan(patterns []Pattern, id string, overrides map[string]Action) Action {
+	if action, ok := overrides[id]; ok {
+		return action
+	}
+	return actionForPattern(patterns, id)
 }
 
 func newEventID() string {

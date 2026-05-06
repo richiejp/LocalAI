@@ -237,6 +237,52 @@ type PIIEventSpan struct {
 	HashPrefix string `json:"hash_prefix"`
 }
 
+// PIIPatternActionUpdate is the input for set_pii_pattern_action.
+// The mutation is transient — it lives until process restart, when
+// patterns reload from --pii-config / DefaultPatterns. Persistent
+// changes belong in YAML.
+type PIIPatternActionUpdate struct {
+	ID     string `json:"id"     jsonschema:"Pattern id to mutate (e.g. email, ssn, credit_card, api_key_prefix)."`
+	Action string `json:"action" jsonschema:"New action: mask, block, or route_local."`
+}
+
+// MiddlewareStatus is the aggregated /api/middleware/status payload —
+// the React Middleware page renders this in one go. Routing is a
+// placeholder until subsystem 2 lands.
+type MiddlewareStatus struct {
+	PII    MiddlewarePIIStatus    `json:"pii"`
+	Router MiddlewareRouterStatus `json:"router"`
+}
+
+// MiddlewarePIIStatus shows what the redactor is doing right now and
+// which models opt in. enabled_globally=false means --disable-pii.
+type MiddlewarePIIStatus struct {
+	EnabledGlobally           bool                  `json:"enabled_globally"`
+	Reason                    string                `json:"reason,omitempty"`
+	DefaultEnabledForBackends []string              `json:"default_enabled_for_backends,omitempty"`
+	Patterns                  []PIIPattern          `json:"patterns"`
+	Models                    []MiddlewarePIIModel  `json:"models"`
+	RecentEventCount          int                   `json:"recent_event_count"`
+}
+
+// MiddlewarePIIModel is one model row in the per-model PII table.
+type MiddlewarePIIModel struct {
+	Name              string            `json:"name"`
+	Backend           string            `json:"backend"`
+	Enabled           bool              `json:"enabled"`
+	Explicit          bool              `json:"explicit"`             // Did YAML set Enabled, or did the backend prefix decide?
+	DefaultForBackend bool              `json:"default_for_backend"`  // Backend matches the auto-on rule (proxy-*).
+	Overrides         map[string]string `json:"overrides,omitempty"`
+}
+
+// MiddlewareRouterStatus is the placeholder shape the Routing tab
+// reads. Subsystem 2 fills in Models with real RouterDecision rows.
+type MiddlewareRouterStatus struct {
+	Configured bool     `json:"configured"`
+	Models     []string `json:"models"`
+	Note       string   `json:"note,omitempty"`
+}
+
 // VRAMEstimateRequest is the input for vram_estimate. The output type is
 // pkg/vram.EstimateResult — used directly via the LocalAIClient interface
 // so the LLM sees the same shape (size_bytes/size_display/vram_bytes/

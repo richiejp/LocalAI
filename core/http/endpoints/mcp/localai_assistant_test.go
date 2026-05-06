@@ -86,6 +86,18 @@ func (stubClient) GetPIIEvents(_ context.Context, _ localaitools.PIIEventsQuery)
 func (stubClient) TestPIIRedaction(_ context.Context, req localaitools.PIIRedactTestRequest) (*localaitools.PIIRedactTestResult, error) {
 	return &localaitools.PIIRedactTestResult{Redacted: req.Text}, nil
 }
+func (stubClient) SetPIIPatternAction(_ context.Context, _ localaitools.PIIPatternActionUpdate) error {
+	return nil
+}
+func (stubClient) GetMiddlewareStatus(_ context.Context) (*localaitools.MiddlewareStatus, error) {
+	return &localaitools.MiddlewareStatus{
+		PII: localaitools.MiddlewarePIIStatus{
+			EnabledGlobally: true,
+			Patterns:        []localaitools.PIIPattern{},
+			Models:          []localaitools.MiddlewarePIIModel{},
+		},
+	}, nil
+}
 
 var _ = Describe("LocalAIAssistantHolder", func() {
 	var ctx context.Context

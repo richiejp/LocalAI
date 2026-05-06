@@ -21,6 +21,12 @@ import (
 func main() {
 	mockBackend := flag.String("mock-backend", "", "path to mock-backend binary")
 	port := flag.Int("port", 8089, "port to listen on")
+	// piiYAML lets a test inject a per-model `pii:` block into the
+	// auto-generated mock-model.yaml. Used by the middleware end-to-end
+	// verification (and any future test that wants to exercise per-model
+	// gating without bringing up a real backend). The argument is the
+	// body of the pii: block — the leading "pii:\n  " is added here.
+	piiYAML := flag.String("pii-yaml", "", "optional pii: block to merge into mock-model.yaml")
 	flag.Parse()
 
 	if *mockBackend == "" {
@@ -71,7 +77,11 @@ func main() {
 		fmt.Fprintf(os.Stderr, "error marshaling config: %v\n", err)
 		os.Exit(1)
 	}
-	if err := os.WriteFile(filepath.Join(modelsPath, "mock-model.yaml"), configYAML, 0644); err != nil {
+	body := configYAML
+	if *piiYAML != "" {
+		body = append(body, []byte("pii:\n  "+*piiYAML+"\n")...)
+	}
+	if err := os.WriteFile(filepath.Join(modelsPath, "mock-model.yaml"), body, 0644); err != nil {
 		fmt.Fprintf(os.Stderr, "error writing config: %v\n", err)
 		os.Exit(1)
 	}

@@ -629,6 +629,22 @@ func (c *Client) TestPIIRedaction(ctx context.Context, req localaitools.PIIRedac
 	return &out, nil
 }
 
+func (c *Client) SetPIIPatternAction(ctx context.Context, req localaitools.PIIPatternActionUpdate) error {
+	if req.ID == "" {
+		return fmt.Errorf("pattern id is required")
+	}
+	return c.do(ctx, http.MethodPut, routePIIPatternByID(req.ID),
+		map[string]string{"action": req.Action}, nil)
+}
+
+func (c *Client) GetMiddlewareStatus(ctx context.Context) (*localaitools.MiddlewareStatus, error) {
+	var out localaitools.MiddlewareStatus
+	if err := c.do(ctx, http.MethodGet, routeMiddleware, nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // ---- helpers ----
 
 func contains(haystack, lowerNeedle string) bool {

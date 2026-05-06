@@ -12,6 +12,10 @@ import (
 type EventStore interface {
 	Record(ctx context.Context, e PIIEvent) error
 	List(ctx context.Context, q ListQuery) ([]PIIEvent, error)
+	// Count returns the number of events currently stored. Used by
+	// /api/middleware/status to surface a "recent_event_count" without
+	// pulling the whole list (the dashboard polls this on a refresh).
+	Count(ctx context.Context) (int, error)
 	Close() error
 }
 
@@ -108,6 +112,15 @@ func (s *memoryEventStore) List(_ context.Context, q ListQuery) ([]PIIEvent, err
 		}
 	}
 	return out, nil
+}
+
+func (s *memoryEventStore) Count(_ context.Context) (int, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.full {
+		return s.cap, nil
+	}
+	return s.cursor, nil
 }
 
 func (s *memoryEventStore) Close() error { return nil }

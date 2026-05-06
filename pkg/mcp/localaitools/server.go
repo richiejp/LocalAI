@@ -50,6 +50,7 @@ func NewServer(client LocalAIClient, opts Options) *mcp.Server {
 	registerBrandingTools(srv, client, opts)
 	registerUsageTools(srv, client, opts)
 	registerPIITools(srv, client, opts)
+	registerMiddlewareTools(srv, client, opts)
 
 	return srv
 }

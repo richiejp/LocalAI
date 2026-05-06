@@ -41,18 +41,20 @@ var toolToHTTPRoute = map[string]string{
 	ToolListPIIPatterns:     "GET /api/pii/patterns",
 	ToolGetPIIEvents:        "GET /api/pii/events",
 	ToolTestPIIRedaction:    "POST /api/pii/test",
+	ToolGetMiddlewareStatus: "GET /api/middleware/status",
 
 	// Mutating tools.
-	ToolInstallModel:      "POST /models/apply",
-	ToolImportModelURI:    "POST /models/import-uri",
-	ToolDeleteModel:       "POST /models/delete/:name",
-	ToolEditModelConfig:   "PATCH /api/models/config-json/:name",
-	ToolReloadModels:      "POST /models/reload",
-	ToolInstallBackend:    "POST /backends/apply",
-	ToolUpgradeBackend:    "POST /backends/upgrade/:name",
-	ToolToggleModelState:  "PUT /models/toggle-state/:name/:action",
-	ToolToggleModelPinned: "PUT /models/toggle-pinned/:name/:action",
-	ToolSetBranding:       "POST /api/settings (instance_name, instance_tagline)",
+	ToolInstallModel:        "POST /models/apply",
+	ToolImportModelURI:      "POST /models/import-uri",
+	ToolDeleteModel:         "POST /models/delete/:name",
+	ToolEditModelConfig:     "PATCH /api/models/config-json/:name",
+	ToolReloadModels:        "POST /models/reload",
+	ToolInstallBackend:      "POST /backends/apply",
+	ToolUpgradeBackend:      "POST /backends/upgrade/:name",
+	ToolToggleModelState:    "PUT /models/toggle-state/:name/:action",
+	ToolToggleModelPinned:   "PUT /models/toggle-pinned/:name/:action",
+	ToolSetBranding:         "POST /api/settings (instance_name, instance_tagline)",
+	ToolSetPIIPatternAction: "PUT /api/pii/patterns/:id",
 }
 
 // allKnownTools is the union of expectedFullCatalog (defined in

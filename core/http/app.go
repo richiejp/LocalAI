@@ -221,7 +221,7 @@ func API(application *application.Application) (*echo.Echo, error) {
 	if metricsService := application.MetricsService(); metricsService != nil {
 		e.Use(localai.LocalAIMetricsAPIMiddleware(metricsService))
 		e.Server.RegisterOnShutdown(func() {
-			metricsService.Shutdown()
+			_ = metricsService.Shutdown()
 		})
 	}
 
@@ -359,6 +359,7 @@ func API(application *application.Application) (*echo.Echo, error) {
 	// mode by attributing requests to the synthetic "local" user.
 	routes.RegisterUsageRoutes(e, application)
 	routes.RegisterPIIRoutes(e, application)
+	routes.RegisterMiddlewareRoutes(e, application)
 
 	routes.RegisterElevenLabsRoutes(e, requestExtractor, application.ModelConfigLoader(), application.ModelLoader(), application.ApplicationConfig())
 

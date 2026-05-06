@@ -29,7 +29,12 @@ const (
 	routePIIPatterns   = "/api/pii/patterns"
 	routePIIEvents     = "/api/pii/events"
 	routePIITest       = "/api/pii/test"
+	routeMiddleware    = "/api/middleware/status"
 )
+
+func routePIIPatternByID(id string) string {
+	return "/api/pii/patterns/" + url.PathEscape(id)
+}
 
 func routeJobStatus(jobID string) string {
 	return "/models/jobs/" + url.PathEscape(jobID)

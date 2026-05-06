@@ -3,14 +3,19 @@ package pii
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"sort"
 	"strings"
+	"sync"
 )
 
 // Redactor scans text against a configured pattern set and applies the
-// per-pattern action. It is stateless and safe for concurrent use; the
-// per-request decision lives in the returned Result.
+// per-pattern action. The pattern set itself is mutable at runtime via
+// SetAction (the /api/pii/patterns/:id admin endpoint mutates it
+// in-place); reads are guarded by a mutex so concurrent requests stay
+// race-free.
 type Redactor struct {
+	mu       sync.RWMutex
 	patterns []Pattern
 	maxLen   int
 }
@@ -30,12 +35,55 @@ func NewRedactor(patterns []Pattern) *Redactor {
 // tail buffer to match.
 func (r *Redactor) MaxPatternLength() int { return r.maxLen }
 
-// Patterns returns the configured pattern set. Read-only.
-func (r *Redactor) Patterns() []Pattern { return r.patterns }
+// Patterns returns a copy of the configured pattern set so callers can
+// iterate without holding the redactor lock. The compiled regexes are
+// shared — they are immutable once built.
+func (r *Redactor) Patterns() []Pattern {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]Pattern, len(r.patterns))
+	copy(out, r.patterns)
+	return out
+}
 
-// Redact scans text and returns the result. For every match it records
-// a Span (with HashPrefix, never the value) and applies the pattern's
-// Action:
+// SetAction overrides the action for a single pattern in place. Returns
+// an error when the id is unknown or the action is not one of the
+// canonical Action constants. Used by the /api/pii/patterns/:id admin
+// endpoint and the set_pii_pattern_action MCP tool — both paths are
+// transient (the change is lost on process restart unless the operator
+// also persists it via --pii-config). Concurrent reads from Redact are
+// safe because the slice element is replaced atomically under the
+// write lock.
+func (r *Redactor) SetAction(id string, action Action) error {
+	if action != ActionMask && action != ActionBlock && action != ActionRouteLocal {
+		return fmt.Errorf("unknown action %q (must be mask, block, or route_local)", action)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i := range r.patterns {
+		if r.patterns[i].ID == id {
+			r.patterns[i].Action = action
+			return nil
+		}
+	}
+	return fmt.Errorf("unknown pattern id %q", id)
+}
+
+// Redact is a thin wrapper for callers that don't need per-request
+// action overrides. It applies each pattern's compiled-in default
+// action.
+func (r *Redactor) Redact(text string) Result {
+	return r.RedactWithOverrides(text, nil)
+}
+
+// RedactWithOverrides scans text and returns the result. The override
+// map is keyed by pattern id; when present, the value replaces the
+// pattern's compiled-in action for this call only — the redactor's
+// stored action is unchanged. Pattern ids missing from the map use
+// their stored action.
+//
+// For every match it records a Span (with HashPrefix, never the value)
+// and applies the resolved Action:
 //   - block: sets Result.Blocked, leaves text intact (caller decides
 //     whether to surface the redacted form).
 //   - mask: replaces the span with maskFor(pattern.ID).
@@ -43,8 +91,12 @@ func (r *Redactor) Patterns() []Pattern { return r.patterns }
 //
 // Spans are returned in the original input's coordinate system so the
 // PIIEvent record can be written without re-running the scan.
-func (r *Redactor) Redact(text string) Result {
-	if len(r.patterns) == 0 || text == "" {
+func (r *Redactor) RedactWithOverrides(text string, overrides map[string]Action) Result {
+	r.mu.RLock()
+	patterns := r.patterns
+	r.mu.RUnlock()
+
+	if len(patterns) == 0 || text == "" {
 		return Result{Redacted: text}
 	}
 
@@ -56,11 +108,15 @@ func (r *Redactor) Redact(text string) Result {
 	}
 	var hits []rawHit
 
-	for _, p := range r.patterns {
+	for _, p := range patterns {
 		if p.regex == nil {
 			// Pattern declared but Compile() not called. Skip rather
 			// than panic; the caller already saw an error from Compile.
 			continue
+		}
+		action := p.Action
+		if override, ok := overrides[p.ID]; ok {
+			action = override
 		}
 		idxs := p.regex.FindAllStringIndex(text, -1)
 		for _, idx := range idxs {
@@ -70,7 +126,7 @@ func (r *Redactor) Redact(text string) Result {
 			}
 			hits = append(hits, rawHit{
 				patternID: p.ID,
-				action:    p.Action,
+				action:    action,
 				start:     idx[0],
 				end:       idx[1],
 			})

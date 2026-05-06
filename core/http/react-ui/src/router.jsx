@@ -42,6 +42,7 @@ import NodeBackendLogs from './pages/NodeBackendLogs'
 import NotFound from './pages/NotFound'
 import Usage from './pages/Usage'
 import Users from './pages/Users'
+import Middleware from './pages/Middleware'
 import Account from './pages/Account'
 import RequireAdmin from './components/RequireAdmin'
 import RequireAuth from './components/RequireAuth'
@@ -86,6 +87,7 @@ const appChildren = [
   { path: 'usage', element: <Usage /> },
   { path: 'account', element: <Account /> },
   { path: 'users', element: <RequireAuthEnabled><Admin><Users /></Admin></RequireAuthEnabled> },
+  { path: 'middleware', element: <Admin><Middleware /></Admin> },
   { path: 'manage', element: <Admin><Manage /></Admin> },
   { path: 'backends', element: <Admin><Backends /></Admin> },
   { path: 'settings', element: <Admin><Settings /></Admin> },

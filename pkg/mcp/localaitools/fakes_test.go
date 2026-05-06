@@ -49,6 +49,8 @@ type fakeClient struct {
 	listPIIPatterns     func() ([]PIIPattern, error)
 	getPIIEvents        func(PIIEventsQuery) ([]PIIEvent, error)
 	testPIIRedaction    func(PIIRedactTestRequest) (*PIIRedactTestResult, error)
+	setPIIPatternAction func(PIIPatternActionUpdate) error
+	getMiddlewareStatus func() (*MiddlewareStatus, error)
 }
 
 type fakeCall struct {
@@ -273,6 +275,29 @@ func (f *fakeClient) TestPIIRedaction(_ context.Context, req PIIRedactTestReques
 		return f.testPIIRedaction(req)
 	}
 	return &PIIRedactTestResult{Redacted: req.Text}, nil
+}
+
+func (f *fakeClient) SetPIIPatternAction(_ context.Context, req PIIPatternActionUpdate) error {
+	f.record("SetPIIPatternAction", req)
+	if f.setPIIPatternAction != nil {
+		return f.setPIIPatternAction(req)
+	}
+	return nil
+}
+
+func (f *fakeClient) GetMiddlewareStatus(_ context.Context) (*MiddlewareStatus, error) {
+	f.record("GetMiddlewareStatus", nil)
+	if f.getMiddlewareStatus != nil {
+		return f.getMiddlewareStatus()
+	}
+	return &MiddlewareStatus{
+		PII: MiddlewarePIIStatus{
+			EnabledGlobally: true,
+			Patterns:        []PIIPattern{},
+			Models:          []MiddlewarePIIModel{},
+		},
+		Router: MiddlewareRouterStatus{Configured: false, Models: []string{}},
+	}, nil
 }
 
 // boom is a sentinel error used by tests that want a deterministic error string.
