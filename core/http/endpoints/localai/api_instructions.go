@@ -108,7 +108,13 @@ var instructionDefs = []instructionDef{
 		Name:        "middleware-admin",
 		Description: "Inspect and configure the routing-module middleware (PII filter and routing)",
 		Tags:        []string{"middleware", "pii", "router"},
-		Intro:       "GET /api/middleware/status is the single round-trip the /app/middleware admin page reads to render the current state: active PII patterns and their actions, every model's resolved enabled/override state, recent event count, and a placeholder for routing (subsystem 2 not yet shipped). Admin-only (the synthetic local user is admin in no-auth mode). PUT /api/pii/patterns/:id changes a pattern's action in-process — TRANSIENT, lost on restart. To persist, edit --pii-config YAML. The same surface is exposed as MCP tools (`get_middleware_status`, `set_pii_pattern_action`) for agent-driven configuration.",
+		Intro:       "GET /api/middleware/status is the single round-trip the /app/middleware admin page reads to render the current state: active PII patterns and their actions, every model's resolved enabled/override state, recent event count, and the active routing models with their classifier configurations. Admin-only (the synthetic local user is admin in no-auth mode). PUT /api/pii/patterns/:id changes a pattern's action in-process — TRANSIENT, lost on restart. To persist, edit --pii-config YAML. GET /api/router/decisions returns the routing decision log filtered by correlation_id / user_id / router_model. The same surface is exposed as MCP tools (`get_middleware_status`, `set_pii_pattern_action`, `get_router_decisions`) for agent-driven configuration.",
+	},
+	{
+		Name:        "intelligent-routing",
+		Description: "Per-model `router:` configuration that classifies requests and rewrites the served model",
+		Tags:        []string{"router"},
+		Intro:       "Add a `router:` block to a ModelConfig to turn it into a routing model. The block declares a classifier (today: `feature` — handcrafted rules over prompt length and code-fence presence), a list of candidates (label + downstream model + optional rule), and a fallback. When a client addresses the routing model, the RouteModel middleware invokes the classifier, picks a candidate, and rewrites input.Model — the standard model-resolution path then runs ACL, disabled-state, and per-model PII against the chosen target. Depth-1 invariant: candidates must NOT themselves carry a `router:` block; runtime check returns 500 on violation. Decisions are logged to GET /api/router/decisions and surfaced in the /app/middleware Routing tab.",
 	},
 }
 

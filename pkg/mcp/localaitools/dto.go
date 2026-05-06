@@ -283,6 +283,32 @@ type MiddlewareRouterStatus struct {
 	Note       string   `json:"note,omitempty"`
 }
 
+// RouterDecisionsQuery filters get_router_decisions.
+type RouterDecisionsQuery struct {
+	CorrelationID string `json:"correlation_id,omitempty" jsonschema:"Optional X-Correlation-ID join key (binds decisions to the request and usage record)."`
+	UserID        string `json:"user_id,omitempty"        jsonschema:"Optional user id to scope the query."`
+	RouterModel   string `json:"router_model,omitempty"   jsonschema:"Optional router model name to filter by (e.g. smart-router)."`
+	Limit         int    `json:"limit,omitempty"          jsonschema:"Maximum decisions. Defaults to 100."`
+}
+
+// RouterDecision is the LLM-facing view of one routing decision. The
+// prompt is NEVER stored; admins audit by hash if they need to dedupe
+// recurring routing patterns.
+type RouterDecision struct {
+	ID             string  `json:"id"`
+	CorrelationID  string  `json:"correlation_id"`
+	UserID         string  `json:"user_id"`
+	RouterModel    string  `json:"router_model"`
+	RequestedModel string  `json:"requested_model"`
+	ServedModel    string  `json:"served_model"`
+	Classifier     string  `json:"classifier"`
+	Label          string  `json:"label"`
+	Score          float64 `json:"score"`
+	LatencyMs      int64   `json:"latency_ms"`
+	Cached         bool    `json:"cached"`
+	CreatedAt      string  `json:"created_at"`
+}
+
 // VRAMEstimateRequest is the input for vram_estimate. The output type is
 // pkg/vram.EstimateResult — used directly via the LocalAIClient interface
 // so the LLM sees the same shape (size_bytes/size_display/vram_bytes/

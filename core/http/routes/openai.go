@@ -48,11 +48,24 @@ func RegisterOpenAIRoutes(app *echo.Echo,
 				return next(c)
 			}
 		},
-		// PII redaction last in the slice = innermost middleware =
-		// runs after the OpenAI request has been parsed onto the
-		// context. Mutates message text in place (mask), short-
-		// circuits the request (block), or sets a route_local flag
-		// the future router middleware honours.
+		// RouteModel runs AFTER the schema-specific request parser so
+		// the classifier sees a populated *schema.OpenAIRequest. When
+		// the resolved model has a Router config, the middleware
+		// rewrites input.Model to the chosen candidate, swaps
+		// MODEL_CONFIG, and stamps RequestedModel/ServedModel for the
+		// usage log. Models without a Router pass through.
+		middleware.RouteModel(
+			application.ModelConfigLoader(),
+			application.ApplicationConfig(),
+			application.RouterDecisions(),
+			application.FallbackUser(),
+			middleware.OpenAIProbe,
+		),
+		// PII redaction runs INNERMOST, after RouteModel has resolved
+		// the actual served model. This is what makes per-model PII
+		// configs honour the routed target (e.g., a router fans out to
+		// claude-strict; that model's pii block applies, not the
+		// router model's).
 		pii.RequestMiddleware(application.PIIRedactor(), application.PIIEvents(), piiadapter.OpenAI(), application.FallbackUser()),
 	}
 	app.POST("/v1/chat/completions", chatHandler, chatMiddleware...)

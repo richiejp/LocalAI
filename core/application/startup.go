@@ -19,6 +19,7 @@ import (
 	"github.com/mudler/LocalAI/core/services/nodes"
 	"github.com/mudler/LocalAI/core/services/routing/billing"
 	"github.com/mudler/LocalAI/core/services/routing/pii"
+	"github.com/mudler/LocalAI/core/services/routing/router"
 	"github.com/mudler/LocalAI/core/services/storage"
 	"github.com/mudler/LocalAI/pkg/vram"
 	coreStartup "github.com/mudler/LocalAI/core/startup"
@@ -201,6 +202,13 @@ func New(opts ...config.AppOption) (*Application, error) {
 		)
 	} else {
 		xlog.Info("pii: disabled by --disable-pii")
+	}
+
+	// Wire the routing decision log. Always-on when stats are enabled —
+	// the per-router admin page reads this as the live activity feed
+	// and as input to drift checks once subsystem 5 (admission) lands.
+	if !options.DisableStats {
+		application.routerDecisions = router.NewMemoryDecisionStore(0)
 	}
 
 	// Wire JobStore for DB-backed task/job persistence whenever auth DB is available.

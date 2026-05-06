@@ -21,6 +21,7 @@ import (
 	"github.com/mudler/LocalAI/core/http/auth"
 	"github.com/mudler/LocalAI/core/services/routing/billing"
 	"github.com/mudler/LocalAI/core/services/routing/pii"
+	"github.com/mudler/LocalAI/core/services/routing/router"
 	"github.com/mudler/LocalAI/internal"
 	localaitools "github.com/mudler/LocalAI/pkg/mcp/localaitools"
 	"github.com/mudler/LocalAI/pkg/model"
@@ -53,6 +54,11 @@ type Client struct {
 	// the tools to return a "filter disabled" error.
 	PIIRedactor *pii.Redactor
 	PIIEvents   pii.EventStore
+
+	// RouterDecisions backs the get_router_decisions tool. nil makes
+	// the tool return an empty list — same shape the REST endpoint
+	// returns when stats are disabled.
+	RouterDecisions router.DecisionStore
 
 	modelAdmin *modeladmin.ConfigService
 }
@@ -668,6 +674,39 @@ func (c *Client) SetPIIPatternAction(_ context.Context, req localaitools.PIIPatt
 		return errors.New("pattern id is required")
 	}
 	return c.PIIRedactor.SetAction(req.ID, pii.Action(req.Action))
+}
+
+func (c *Client) GetRouterDecisions(ctx context.Context, q localaitools.RouterDecisionsQuery) ([]localaitools.RouterDecision, error) {
+	if c.RouterDecisions == nil {
+		return []localaitools.RouterDecision{}, nil
+	}
+	rows, err := c.RouterDecisions.List(ctx, router.DecisionListQuery{
+		CorrelationID: q.CorrelationID,
+		UserID:        q.UserID,
+		RouterModel:   q.RouterModel,
+		Limit:         q.Limit,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list router decisions: %w", err)
+	}
+	out := make([]localaitools.RouterDecision, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, localaitools.RouterDecision{
+			ID:             r.ID,
+			CorrelationID:  r.CorrelationID,
+			UserID:         r.UserID,
+			RouterModel:    r.RouterModel,
+			RequestedModel: r.RequestedModel,
+			ServedModel:    r.ServedModel,
+			Classifier:     r.Classifier,
+			Label:          r.Label,
+			Score:          r.Score,
+			LatencyMs:      r.LatencyMs,
+			Cached:         r.Cached,
+			CreatedAt:      r.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
+		})
+	}
+	return out, nil
 }
 
 func (c *Client) GetMiddlewareStatus(ctx context.Context) (*localaitools.MiddlewareStatus, error) {

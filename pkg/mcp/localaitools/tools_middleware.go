@@ -21,13 +21,24 @@ import (
 func registerMiddlewareTools(s *mcp.Server, client LocalAIClient, opts Options) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        ToolGetMiddlewareStatus,
-		Description: "Aggregated routing-module status: PII pattern catalogue with current actions, per-model resolved PII state and overrides, recent event count, plus a router placeholder. Read-only.",
+		Description: "Aggregated routing-module status: PII pattern catalogue with current actions, per-model resolved PII state and overrides, recent event count, plus the active router models and their classifier configs. Read-only.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, any, error) {
 		status, err := client.GetMiddlewareStatus(ctx)
 		if err != nil {
 			return errorResult(err), nil, nil
 		}
 		return jsonResult(status), nil, nil
+	})
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        ToolGetRouterDecisions,
+		Description: "Recent intelligent-routing decisions. Each row records which router model the client called, which candidate the classifier picked, the classifier's score and latency, and a correlation id that joins back to the usage record. Filter by correlation_id, user_id, or router_model. Read-only.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args RouterDecisionsQuery) (*mcp.CallToolResult, any, error) {
+		decisions, err := client.GetRouterDecisions(ctx, args)
+		if err != nil {
+			return errorResult(err), nil, nil
+		}
+		return jsonResult(decisions), nil, nil
 	})
 
 	if opts.DisableMutating {

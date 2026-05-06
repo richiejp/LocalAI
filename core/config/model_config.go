@@ -95,9 +95,79 @@ type ModelConfig struct {
 	Options   []string `yaml:"options,omitempty" json:"options,omitempty"`
 	Overrides []string `yaml:"overrides,omitempty" json:"overrides,omitempty"`
 
-	MCP   MCPConfig   `yaml:"mcp,omitempty" json:"mcp,omitempty"`
-	Agent AgentConfig `yaml:"agent,omitempty" json:"agent,omitempty"`
-	PII   PIIConfig   `yaml:"pii,omitempty" json:"pii,omitempty"`
+	MCP    MCPConfig    `yaml:"mcp,omitempty" json:"mcp,omitempty"`
+	Agent  AgentConfig  `yaml:"agent,omitempty" json:"agent,omitempty"`
+	PII    PIIConfig    `yaml:"pii,omitempty" json:"pii,omitempty"`
+	Router RouterConfig `yaml:"router,omitempty" json:"router,omitempty"`
+}
+
+// @Description Intelligent routing configuration. When a model declares
+// a Router block, requests addressed to it are reclassified at runtime
+// and dispatched to one of the named candidates. The router rewrites
+// input.Model in-place, then the standard model-resolution path picks
+// up the resolved config — meaning ACL checks, disabled-state, and
+// per-model PII still run against the chosen target.
+//
+// Depth-1 invariant: candidates must NOT themselves carry a Router
+// block. The router's "smart-router → claude-strict → proxy-anthropic"
+// chain is fine, but "router-A → router-B → claude" is rejected at
+// config load to keep the dispatch graph acyclic and predictable. The
+// middleware also asserts depth ≤ 1 at runtime as a defensive check.
+type RouterConfig struct {
+	// Classifier picks the implementation. Today the only shipped
+	// classifier is "feature" — handcrafted rules over prompt length
+	// and content (code fences, math). "knn" and "llm" are reserved
+	// for future slices and rejected at config load when used.
+	Classifier string `yaml:"classifier,omitempty" json:"classifier,omitempty"`
+
+	// Candidates is the routing table. The classifier's Decision.Label
+	// must match one of these labels; if not, Fallback runs (or the
+	// request errors when Fallback is empty).
+	Candidates []RouterCandidate `yaml:"candidates,omitempty" json:"candidates,omitempty"`
+
+	// Fallback is the model used when the classifier returns no match
+	// or the matched label can't be resolved. Empty fallback means
+	// router failures bubble up as 500 — fail-fast, not silent-bypass.
+	Fallback string `yaml:"fallback,omitempty" json:"fallback,omitempty"`
+}
+
+// RouterCandidate names a downstream model the classifier can pick.
+// Rules is the classifier-specific selector — the feature classifier
+// reads MaxLength / RequiresCode etc.; future classifiers (knn, llm)
+// ignore it.
+type RouterCandidate struct {
+	Label string             `yaml:"label" json:"label"`
+	Model string             `yaml:"model" json:"model"`
+	Rules RouterCandidateRule `yaml:"rules,omitempty" json:"rules,omitempty"`
+}
+
+// RouterCandidateRule is the union of selectors the feature classifier
+// understands. The rule that matches FIRST in the candidate list wins;
+// candidates with no rule fields populated act as "match anything".
+//
+// Adding a new selector here without updating feature.go would silently
+// match nothing — the classifier ignores unknown rule fields. We pay
+// that cost (vs. a discriminated union) because YAML schemas are read
+// in many places and a flat shape is easier to template-fill from the
+// admin UI.
+type RouterCandidateRule struct {
+	// MaxPromptLength matches when the joined prompt is at most N
+	// characters. Inclusive. 0 means no upper bound.
+	MaxPromptLength int `yaml:"max_prompt_length,omitempty" json:"max_prompt_length,omitempty"`
+	// MinPromptLength matches when the joined prompt is at least N
+	// characters. Inclusive. 0 means no lower bound.
+	MinPromptLength int `yaml:"min_prompt_length,omitempty" json:"min_prompt_length,omitempty"`
+	// RequiresCode matches only when the prompt contains a triple-
+	// backtick code fence. Useful for routing code-heavy chats to a
+	// stronger model.
+	RequiresCode bool `yaml:"requires_code,omitempty" json:"requires_code,omitempty"`
+}
+
+// HasRouter returns true when the model declares a router config with
+// at least one candidate. Used by the RouteModel middleware to decide
+// whether to engage the classifier.
+func (c *ModelConfig) HasRouter() bool {
+	return len(c.Router.Candidates) > 0
 }
 
 // @Description PII filtering configuration. PII redaction is per-model so

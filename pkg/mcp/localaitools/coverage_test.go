@@ -42,6 +42,7 @@ var toolToHTTPRoute = map[string]string{
 	ToolGetPIIEvents:        "GET /api/pii/events",
 	ToolTestPIIRedaction:    "POST /api/pii/test",
 	ToolGetMiddlewareStatus: "GET /api/middleware/status",
+	ToolGetRouterDecisions:  "GET /api/router/decisions",
 
 	// Mutating tools.
 	ToolInstallModel:        "POST /models/apply",

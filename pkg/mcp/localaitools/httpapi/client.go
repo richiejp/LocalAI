@@ -645,6 +645,33 @@ func (c *Client) GetMiddlewareStatus(ctx context.Context) (*localaitools.Middlew
 	return &out, nil
 }
 
+func (c *Client) GetRouterDecisions(ctx context.Context, q localaitools.RouterDecisionsQuery) ([]localaitools.RouterDecision, error) {
+	qs := url.Values{}
+	if q.CorrelationID != "" {
+		qs.Set("correlation_id", q.CorrelationID)
+	}
+	if q.UserID != "" {
+		qs.Set("user_id", q.UserID)
+	}
+	if q.RouterModel != "" {
+		qs.Set("router_model", q.RouterModel)
+	}
+	if q.Limit > 0 {
+		qs.Set("limit", fmt.Sprintf("%d", q.Limit))
+	}
+	path := routeRouterDecisions
+	if enc := qs.Encode(); enc != "" {
+		path = path + "?" + enc
+	}
+	var raw struct {
+		Decisions []localaitools.RouterDecision `json:"decisions"`
+	}
+	if err := c.do(ctx, http.MethodGet, path, nil, &raw); err != nil {
+		return nil, err
+	}
+	return raw.Decisions, nil
+}
+
 // ---- helpers ----
 
 func contains(haystack, lowerNeedle string) bool {

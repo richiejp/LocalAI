@@ -18,6 +18,7 @@ import (
 	"github.com/mudler/LocalAI/core/services/nodes"
 	"github.com/mudler/LocalAI/core/services/routing/billing"
 	"github.com/mudler/LocalAI/core/services/routing/pii"
+	"github.com/mudler/LocalAI/core/services/routing/router"
 	"github.com/mudler/LocalAI/core/services/voicerecognition"
 	"github.com/mudler/LocalAI/core/templates"
 	pkggrpc "github.com/mudler/LocalAI/pkg/grpc"
@@ -60,6 +61,7 @@ type Application struct {
 	fallbackUser       *auth.User
 	piiRedactor        *pii.Redactor
 	piiEvents          pii.EventStore
+	routerDecisions    router.DecisionStore
 	watchdogMutex      sync.Mutex
 	watchdogStop       chan bool
 	p2pMutex           sync.Mutex
@@ -238,6 +240,13 @@ func (a *Application) PIIEvents() pii.EventStore {
 	return a.piiEvents
 }
 
+// RouterDecisions returns the routing decision store. nil when stats
+// are disabled (--disable-stats); the RouteModel middleware skips the
+// log write in that case but still rewrites requests.
+func (a *Application) RouterDecisions() router.DecisionStore {
+	return a.routerDecisions
+}
+
 // StartupConfig returns the original startup configuration (from env vars, before file loading)
 func (a *Application) StartupConfig() *config.ApplicationConfig {
 	return a.startupConfig
@@ -316,6 +325,7 @@ func (a *Application) start() error {
 		// PII filter — same nil-or-real wiring.
 		assistantClient.PIIRedactor = a.piiRedactor
 		assistantClient.PIIEvents = a.piiEvents
+		assistantClient.RouterDecisions = a.routerDecisions
 		if err := holder.Initialize(a.applicationConfig.Context, assistantClient, localaitools.Options{}); err != nil {
 			// Why log+continue instead of fail: the assistant is an optional
 			// feature; a failure here must not take down the whole server.

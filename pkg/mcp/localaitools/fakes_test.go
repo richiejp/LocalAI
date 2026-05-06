@@ -51,6 +51,7 @@ type fakeClient struct {
 	testPIIRedaction    func(PIIRedactTestRequest) (*PIIRedactTestResult, error)
 	setPIIPatternAction func(PIIPatternActionUpdate) error
 	getMiddlewareStatus func() (*MiddlewareStatus, error)
+	getRouterDecisions  func(RouterDecisionsQuery) ([]RouterDecision, error)
 }
 
 type fakeCall struct {
@@ -283,6 +284,14 @@ func (f *fakeClient) SetPIIPatternAction(_ context.Context, req PIIPatternAction
 		return f.setPIIPatternAction(req)
 	}
 	return nil
+}
+
+func (f *fakeClient) GetRouterDecisions(_ context.Context, q RouterDecisionsQuery) ([]RouterDecision, error) {
+	f.record("GetRouterDecisions", q)
+	if f.getRouterDecisions != nil {
+		return f.getRouterDecisions(q)
+	}
+	return []RouterDecision{}, nil
 }
 
 func (f *fakeClient) GetMiddlewareStatus(_ context.Context) (*MiddlewareStatus, error) {

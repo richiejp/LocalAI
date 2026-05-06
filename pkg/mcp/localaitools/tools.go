@@ -24,6 +24,7 @@ const (
 	ToolGetPIIEvents        = "get_pii_events"
 	ToolTestPIIRedaction    = "test_pii_redaction"
 	ToolGetMiddlewareStatus = "get_middleware_status"
+	ToolGetRouterDecisions  = "get_router_decisions"
 
 	// Mutating tools — guarded by Options.DisableMutating and the
 	// LLM-side safety prompt (see prompts/10_safety.md).

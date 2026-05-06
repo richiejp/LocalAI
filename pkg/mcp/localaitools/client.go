@@ -94,4 +94,10 @@ type LocalAIClient interface {
 	// /app/middleware page: active PII patterns, per-model resolved
 	// enabled state, recent event count, router placeholder.
 	GetMiddlewareStatus(ctx context.Context) (*MiddlewareStatus, error)
+
+	// ---- Router (intelligent routing) ----
+	// GetRouterDecisions returns recent routing decisions for the
+	// /app/middleware Routing tab and for agent-driven introspection.
+	// Admin-required when auth is on.
+	GetRouterDecisions(ctx context.Context, q RouterDecisionsQuery) ([]RouterDecision, error)
 }

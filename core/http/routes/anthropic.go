@@ -42,11 +42,16 @@ func RegisterAnthropicRoutes(app *echo.Echo,
 		re.BuildFilteredFirstAvailableDefaultModel(config.BuildUsecaseFilterFn(config.FLAG_CHAT)),
 		re.SetModelAndConfig(func() schema.LocalAIRequest { return new(schema.AnthropicRequest) }),
 		setAnthropicRequestContext(application.ApplicationConfig()),
-		// PII redaction runs innermost (after the request is parsed and
-		// the model config is on the context). The middleware reads
-		// ModelConfig.PIIIsEnabled() to decide whether to scan; the
-		// default is off for non-proxy backends, so a /v1/messages call
-		// targeting a local model passes through unchanged.
+		// RouteModel runs after the request is parsed but before the
+		// PII filter — see the OpenAI route for why this order matters
+		// (per-model PII configs apply to the routed target).
+		middleware.RouteModel(
+			application.ModelConfigLoader(),
+			application.ApplicationConfig(),
+			application.RouterDecisions(),
+			application.FallbackUser(),
+			middleware.AnthropicProbe,
+		),
 		pii.RequestMiddleware(application.PIIRedactor(), application.PIIEvents(), piiadapter.Anthropic(), application.FallbackUser()),
 	}
 

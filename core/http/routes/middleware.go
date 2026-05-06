@@ -3,11 +3,13 @@ package routes
 import (
 	"context"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/labstack/echo/v4"
 	"github.com/mudler/LocalAI/core/application"
 	"github.com/mudler/LocalAI/core/http/auth"
+	"github.com/mudler/LocalAI/core/services/routing/router"
 )
 
 // RegisterMiddlewareRoutes wires the routing-module admin surface that
@@ -35,11 +37,7 @@ func RegisterMiddlewareRoutes(e *echo.Echo, app *application.Application) {
 		}
 
 		piiSection := buildPIIStatus(app)
-		routerSection := map[string]any{
-			"configured": false,
-			"models":     []any{},
-			"note":       "Intelligent routing is not yet implemented.",
-		}
+		routerSection := buildRouterStatus(app)
 
 		return c.JSON(http.StatusOK, map[string]any{
 			"pii":    piiSection,
@@ -48,15 +46,100 @@ func RegisterMiddlewareRoutes(e *echo.Echo, app *application.Application) {
 	})
 
 	e.GET("/api/router/status", func(c echo.Context) error {
-		// Anonymous read is fine for the placeholder — no sensitive
-		// data leaks. Will tighten to admin-only when subsystem 2
-		// surfaces decision logs.
-		return c.JSON(http.StatusOK, map[string]any{
-			"configured": false,
-			"models":     []any{},
-			"note":       "Intelligent routing is not yet implemented.",
-		})
+		// Read-only — admins want to see classifier configurations
+		// without authenticating, same as /api/pii/patterns.
+		return c.JSON(http.StatusOK, buildRouterStatus(app))
 	})
+
+	e.GET("/api/router/decisions", func(c echo.Context) error {
+		viewer := resolveUsageUser(c, app)
+		if viewer == nil {
+			return c.JSON(http.StatusUnauthorized, map[string]string{"error": "not authenticated"})
+		}
+		// Decision logs may include user ids — admin-only when auth is
+		// on; the synthetic local user has admin so single-user mode
+		// works.
+		if viewer.Role != auth.RoleAdmin {
+			return c.JSON(http.StatusForbidden, map[string]string{"error": "admin access required"})
+		}
+
+		store := app.RouterDecisions()
+		if store == nil {
+			return c.JSON(http.StatusOK, map[string]any{"decisions": []any{}})
+		}
+
+		limit := 100
+		if v := c.QueryParam("limit"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n > 0 {
+				limit = n
+			}
+		}
+		decisions, err := store.List(c.Request().Context(), router.DecisionListQuery{
+			CorrelationID: c.QueryParam("correlation_id"),
+			UserID:        c.QueryParam("user_id"),
+			RouterModel:   c.QueryParam("router_model"),
+			Limit:         limit,
+		})
+		if err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to list decisions"})
+		}
+		return c.JSON(http.StatusOK, map[string]any{"decisions": decisions})
+	})
+}
+
+// buildRouterStatus inventories every model that declares a Router
+// block and reports their classifiers + candidate tables. Reads from
+// the same loader the RouteModel middleware uses so the admin page
+// agrees with what's actually live in the request path.
+func buildRouterStatus(app *application.Application) map[string]any {
+	models := []map[string]any{}
+	hasAny := false
+	for _, cfg := range app.ModelConfigLoader().GetAllModelsConfigs() {
+		if !cfg.HasRouter() {
+			continue
+		}
+		hasAny = true
+		candidates := make([]map[string]any, 0, len(cfg.Router.Candidates))
+		for _, ca := range cfg.Router.Candidates {
+			candidates = append(candidates, map[string]any{
+				"label": ca.Label,
+				"model": ca.Model,
+				"rules": map[string]any{
+					"max_prompt_length": ca.Rules.MaxPromptLength,
+					"min_prompt_length": ca.Rules.MinPromptLength,
+					"requires_code":     ca.Rules.RequiresCode,
+				},
+			})
+		}
+		classifier := cfg.Router.Classifier
+		if classifier == "" {
+			classifier = "feature"
+		}
+		models = append(models, map[string]any{
+			"name":       cfg.Name,
+			"classifier": classifier,
+			"candidates": candidates,
+			"fallback":   cfg.Router.Fallback,
+		})
+	}
+
+	recentCount := 0
+	if store := app.RouterDecisions(); store != nil {
+		if n, err := store.Count(context.Background()); err == nil {
+			recentCount = n
+		}
+	}
+
+	out := map[string]any{
+		"configured":          hasAny,
+		"models":              models,
+		"recent_decision_count": recentCount,
+		"available_classifiers": []string{"feature"},
+	}
+	if !hasAny {
+		out["note"] = "No router models configured. Add a `router:` block to a model YAML to enable intelligent routing."
+	}
+	return out
 }
 
 // buildPIIStatus builds the pii section of /api/middleware/status. It

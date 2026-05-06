@@ -71,6 +71,7 @@ export default function Middleware() {
   const { addToast } = useOutletContext()
   const [status, setStatus] = useState(null)
   const [events, setEvents] = useState([])
+  const [decisions, setDecisions] = useState([])
   const [loading, setLoading] = useState(true)
   const [activeTab, setActiveTab] = useState('filtering')
   const [pendingPattern, setPendingPattern] = useState(null) // id while a PUT is in flight
@@ -78,9 +79,10 @@ export default function Middleware() {
   const fetchAll = useCallback(async () => {
     setLoading(true)
     try {
-      const [statusRes, eventsRes] = await Promise.all([
+      const [statusRes, eventsRes, decisionsRes] = await Promise.all([
         fetch(apiUrl('/api/middleware/status')),
         fetch(apiUrl('/api/pii/events?limit=100')),
+        fetch(apiUrl('/api/router/decisions?limit=100')),
       ])
       if (!statusRes.ok) throw new Error(`status: HTTP ${statusRes.status}`)
       const statusData = await statusRes.json()
@@ -88,6 +90,10 @@ export default function Middleware() {
       if (eventsRes.ok) {
         const data = await eventsRes.json()
         setEvents(data.events || [])
+      }
+      if (decisionsRes.ok) {
+        const data = await decisionsRes.json()
+        setDecisions(data.decisions || [])
       }
     } catch (err) {
       addToast(`Failed to load middleware status: ${err.message}`, 'error')
@@ -157,7 +163,7 @@ export default function Middleware() {
           onSetAction={setPatternAction}
         />
       ) : activeTab === 'routing' ? (
-        <RoutingTab status={status} />
+        <RoutingTab status={status} decisions={decisions} />
       ) : (
         <EventsTab events={events} />
       )}
@@ -293,14 +299,118 @@ function FilteringTab({ status, pendingPattern, onSetAction }) {
   )
 }
 
-function RoutingTab({ status }) {
-  const router = status?.router || { configured: false, note: 'Intelligent routing is not yet implemented.' }
+function RoutingTab({ status, decisions }) {
+  const router = status?.router || { configured: false }
+
+  if (!router.configured || !router.models || router.models.length === 0) {
+    return (
+      <div className="empty-state">
+        <div className="empty-state-icon"><i className="fas fa-route" /></div>
+        <h2 className="empty-state-title">No routers configured</h2>
+        <p className="empty-state-text">
+          {router.note || 'Add a `router:` block to a model YAML to enable intelligent routing. The classifier picks one of the listed candidates per request and the standard model-resolution path runs against the chosen target.'}
+        </p>
+      </div>
+    )
+  }
+
   return (
-    <div className="empty-state">
-      <div className="empty-state-icon"><i className="fas fa-route" /></div>
-      <h2 className="empty-state-title">Routing</h2>
-      <p className="empty-state-text">{router.note}</p>
-    </div>
+    <>
+      {/* Configured router models */}
+      <div className="card" style={{ padding: 'var(--spacing-md)', marginBottom: 'var(--spacing-md)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 'var(--spacing-sm)' }}>
+          <span style={{ fontSize: '0.875rem', fontWeight: 600 }}>Active routers</span>
+          <span style={{ fontSize: '0.6875rem', color: 'var(--color-text-muted)' }}>
+            Edit the router model YAML to change candidates or rules.
+          </span>
+        </div>
+        <div className="table-container">
+          <table className="table">
+            <thead>
+              <tr>
+                <th style={{ width: 160 }}>Model</th>
+                <th style={{ width: 110 }}>Classifier</th>
+                <th>Candidates</th>
+                <th style={{ width: 140 }}>Fallback</th>
+              </tr>
+            </thead>
+            <tbody>
+              {router.models.map(m => (
+                <tr key={m.name}>
+                  <td style={{ fontFamily: 'var(--font-mono)', fontSize: '0.8125rem', fontWeight: 600 }}>{m.name}</td>
+                  <td style={{ fontFamily: 'var(--font-mono)', fontSize: '0.75rem' }}>{m.classifier}</td>
+                  <td style={{ fontSize: '0.75rem' }}>
+                    {(m.candidates || []).map((c, i) => (
+                      <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 6, fontFamily: 'var(--font-mono)' }}>
+                        <span style={{ minWidth: 60, color: 'var(--color-primary)' }}>{c.label}</span>
+                        <span style={{ color: 'var(--color-text-muted)' }}>→</span>
+                        <span>{c.model}</span>
+                        {(c.rules?.max_prompt_length || c.rules?.min_prompt_length || c.rules?.requires_code) && (
+                          <span style={{ fontSize: '0.6875rem', color: 'var(--color-text-muted)', marginLeft: 6 }}>
+                            ({[
+                              c.rules.requires_code && 'code',
+                              c.rules.max_prompt_length > 0 && `≤${c.rules.max_prompt_length}c`,
+                              c.rules.min_prompt_length > 0 && `≥${c.rules.min_prompt_length}c`,
+                            ].filter(Boolean).join(', ')})
+                          </span>
+                        )}
+                      </div>
+                    ))}
+                  </td>
+                  <td style={{ fontFamily: 'var(--font-mono)', fontSize: '0.75rem', color: 'var(--color-text-muted)' }}>
+                    {m.fallback || '—'}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Recent decisions */}
+      <div className="card" style={{ padding: 'var(--spacing-md)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 'var(--spacing-sm)' }}>
+          <span style={{ fontSize: '0.875rem', fontWeight: 600 }}>Recent decisions</span>
+          <span style={{ fontSize: '0.6875rem', color: 'var(--color-text-muted)' }}>
+            Newest first, capped at 100.
+          </span>
+        </div>
+        {(!decisions || decisions.length === 0) ? (
+          <div style={{ padding: 'var(--spacing-md)', textAlign: 'center', color: 'var(--color-text-muted)', fontSize: '0.8125rem' }}>
+            No routing decisions yet. Send a request to a router model to populate this log.
+          </div>
+        ) : (
+          <div className="table-container">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th style={{ width: 170 }}>Time</th>
+                  <th style={{ width: 130 }}>Router</th>
+                  <th style={{ width: 80 }}>Label</th>
+                  <th style={{ width: 130 }}>Served</th>
+                  <th style={{ width: 90 }}>Latency</th>
+                  <th>Correlation</th>
+                </tr>
+              </thead>
+              <tbody>
+                {decisions.map(d => (
+                  <tr key={d.id}>
+                    <td style={{ fontFamily: 'var(--font-mono)', fontSize: '0.75rem', color: 'var(--color-text-muted)' }}>{d.created_at}</td>
+                    <td style={{ fontFamily: 'var(--font-mono)', fontSize: '0.75rem' }}>{d.router_model}</td>
+                    <td style={{ fontFamily: 'var(--font-mono)', fontSize: '0.75rem', fontWeight: 600 }}>{d.label}</td>
+                    <td style={{ fontFamily: 'var(--font-mono)', fontSize: '0.75rem' }}>{d.served_model}</td>
+                    <td style={{ fontFamily: 'var(--font-mono)', fontSize: '0.75rem', color: 'var(--color-text-muted)' }}>{d.latency_ms}ms</td>
+                    <td style={{ fontFamily: 'var(--font-mono)', fontSize: '0.6875rem', color: 'var(--color-text-muted)' }}>
+                      {d.correlation_id || '—'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </>
   )
 }
 

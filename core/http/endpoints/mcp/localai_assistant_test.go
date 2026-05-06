@@ -98,6 +98,9 @@ func (stubClient) GetMiddlewareStatus(_ context.Context) (*localaitools.Middlewa
 		},
 	}, nil
 }
+func (stubClient) GetRouterDecisions(_ context.Context, _ localaitools.RouterDecisionsQuery) ([]localaitools.RouterDecision, error) {
+	return []localaitools.RouterDecision{}, nil
+}
 
 var _ = Describe("LocalAIAssistantHolder", func() {
 	var ctx context.Context

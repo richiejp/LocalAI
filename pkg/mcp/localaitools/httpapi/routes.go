@@ -30,6 +30,7 @@ const (
 	routePIIEvents     = "/api/pii/events"
 	routePIITest       = "/api/pii/test"
 	routeMiddleware    = "/api/middleware/status"
+	routeRouterDecisions = "/api/router/decisions"
 )
 
 func routePIIPatternByID(id string) string {

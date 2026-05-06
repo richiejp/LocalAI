@@ -20,7 +20,34 @@ const MOCK_STATUS = {
     ],
     recent_event_count: 2,
   },
-  router: { configured: false, models: [], note: 'Intelligent routing is not yet implemented.' },
+  router: {
+    configured: true,
+    models: [
+      {
+        name: 'smart-router',
+        classifier: 'feature',
+        fallback: 'qwen-7b',
+        candidates: [
+          { label: 'small', model: 'qwen-3b', rules: { max_prompt_length: 50, min_prompt_length: 0, requires_code: false } },
+          { label: 'code', model: 'qwen-coder', rules: { max_prompt_length: 0, min_prompt_length: 0, requires_code: true } },
+          { label: 'large', model: 'qwen-32b', rules: { max_prompt_length: 0, min_prompt_length: 0, requires_code: false } },
+        ],
+      },
+    ],
+    recent_decision_count: 1,
+    available_classifiers: ['feature'],
+  },
+}
+
+const MOCK_DECISIONS = {
+  decisions: [
+    {
+      id: 'rd_a1', correlation_id: 'corr-1', user_id: 'local',
+      router_model: 'smart-router', requested_model: 'smart-router', served_model: 'qwen-3b',
+      classifier: 'feature', label: 'small', score: 1.0, latency_ms: 2, cached: false,
+      created_at: '2026-05-06T11:00:00Z',
+    },
+  ],
 }
 
 const MOCK_EVENTS = {
@@ -48,6 +75,9 @@ test.describe('Middleware page — admin in no-auth mode', () => {
     await page.route('**/api/pii/events?**', (route) =>
       route.fulfill({ contentType: 'application/json', body: JSON.stringify(MOCK_EVENTS) })
     )
+    await page.route('**/api/router/decisions?**', (route) =>
+      route.fulfill({ contentType: 'application/json', body: JSON.stringify(MOCK_DECISIONS) })
+    )
   })
 
   test('Filtering tab renders pattern catalogue and per-model state', async ({ page }) => {
@@ -65,10 +95,16 @@ test.describe('Middleware page — admin in no-auth mode', () => {
     await expect(page.getByText(/proxy-\*/).first()).toBeVisible()
   })
 
-  test('Routing tab shows the placeholder', async ({ page }) => {
+  test('Routing tab renders configured routers and recent decisions', async ({ page }) => {
     await page.goto('/app/middleware')
     await page.getByRole('button', { name: /Routing/i }).click()
-    await expect(page.getByText(/not yet implemented/i)).toBeVisible()
+    // Active router model name visible.
+    await expect(page.getByText('smart-router').first()).toBeVisible()
+    // Candidate model name visible (one of three).
+    await expect(page.getByText('qwen-coder').first()).toBeVisible()
+    // Decision row visible — label and served model.
+    await expect(page.getByText('small').first()).toBeVisible()
+    await expect(page.getByText('qwen-3b').first()).toBeVisible()
   })
 
   test('Events tab renders rows but never the redacted content', async ({ page }) => {
