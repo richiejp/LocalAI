@@ -14,6 +14,7 @@ import (
 	"github.com/mudler/LocalAI/core/services/agentpool"
 	"github.com/mudler/LocalAI/core/services/facerecognition"
 	"github.com/mudler/LocalAI/core/services/galleryop"
+	"github.com/mudler/LocalAI/core/services/monitoring"
 	"github.com/mudler/LocalAI/core/services/nodes"
 	"github.com/mudler/LocalAI/core/services/routing/billing"
 	"github.com/mudler/LocalAI/core/services/routing/pii"
@@ -54,6 +55,7 @@ type Application struct {
 	faceRegistry       facerecognition.Registry
 	voiceRegistry      voicerecognition.Registry
 	authDB             *gorm.DB
+	metricsService     *monitoring.LocalAIMetricsService
 	statsRecorder      *billing.Recorder
 	fallbackUser       *auth.User
 	piiRedactor        *pii.Redactor
@@ -190,6 +192,19 @@ func (a *Application) VoiceRegistry() voicerecognition.Registry {
 // AuthDB returns the auth database connection, or nil if auth is not enabled.
 func (a *Application) AuthDB() *gorm.DB {
 	return a.authDB
+}
+
+// MetricsService returns the OTel + Prometheus metric service. nil when
+// --disable-metrics is set or initialisation failed at startup.
+//
+// The service is created in startup.go before any counter is registered
+// so that otel.SetMeterProvider runs early enough for the billing
+// recorder's counters to bind to the Prom-backed provider rather than
+// the no-op global. core/http/app.go reuses this instance instead of
+// constructing its own — two providers would orphan one set of counters
+// behind whichever provider lost the SetMeterProvider race.
+func (a *Application) MetricsService() *monitoring.LocalAIMetricsService {
+	return a.metricsService
 }
 
 // StatsRecorder returns the billing recorder used by the usage

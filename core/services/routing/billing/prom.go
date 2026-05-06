@@ -32,15 +32,45 @@ type Recorder struct {
 }
 
 var (
-	metricsOnce sync.Once
-	sharedTokensCounter metric.Int64Counter
-	sharedCostCounter   metric.Float64Counter
-	sharedRequestsCount metric.Int64Counter
+	metricsOnce              sync.Once
+	sharedTokensCounter      metric.Int64Counter
+	sharedCostCounter        metric.Float64Counter
+	sharedRequestsCount      metric.Int64Counter
+	sharedUnrecordedCounter  metric.Int64Counter
+
+	// configuredMeter is the meter handed in by the caller (typically
+	// monitoring.LocalAIMetricsService). Setting it before initMetrics
+	// runs makes sure billing's counters land on the same Prom-backed
+	// MeterProvider that exports /metrics. Without this we relied on
+	// otel.SetMeterProvider race ordering, which silently dropped
+	// counters when initMetrics ran first.
+	configuredMeterMu sync.Mutex
+	configuredMeter   metric.Meter
 )
+
+// SetMeter wires the meter from monitoring.LocalAIMetricsService (or any
+// caller-controlled MeterProvider) before any Recorder is constructed.
+// Call from application startup — initMetrics uses this meter rather than
+// the OTel global the moment it's set.
+func SetMeter(m metric.Meter) {
+	configuredMeterMu.Lock()
+	defer configuredMeterMu.Unlock()
+	configuredMeter = m
+}
+
+func resolveMeter() metric.Meter {
+	configuredMeterMu.Lock()
+	m := configuredMeter
+	configuredMeterMu.Unlock()
+	if m != nil {
+		return m
+	}
+	return otel.Meter("github.com/mudler/LocalAI/core/services/routing/billing")
+}
 
 func initMetrics() {
 	metricsOnce.Do(func() {
-		meter := otel.Meter("github.com/mudler/LocalAI/core/services/routing/billing")
+		meter := resolveMeter()
 		var err error
 		sharedTokensCounter, err = meter.Int64Counter(
 			"localai_tokens_total",
@@ -63,7 +93,31 @@ func initMetrics() {
 		if err != nil {
 			xlog.Error("billing: failed to create requests counter", "error", err)
 		}
+		sharedUnrecordedCounter, err = meter.Int64Counter(
+			"localai_usage_unrecorded_total",
+			metric.WithDescription("Requests that completed but produced no UsageRecord, labeled by endpoint and reason. A non-zero rate signals a billing gap (handler didn't stamp, body lacked usage, no user resolvable)."),
+		)
+		if err != nil {
+			xlog.Error("billing: failed to create unrecorded counter", "error", err)
+		}
 	})
+}
+
+// CountUnrecorded ticks the localai_usage_unrecorded_total counter so that
+// silent billing misses are observable. UsageMiddleware calls this whenever
+// a request completes without producing a UsageRecord. Reasons should be
+// short, stable strings ("no_handler_stamp", "no_user", "parse_failed", …)
+// — never user-supplied content.
+func CountUnrecorded(ctx context.Context, endpoint, reason string) {
+	initMetrics()
+	if sharedUnrecordedCounter == nil {
+		return
+	}
+	sharedUnrecordedCounter.Add(ctx, 1,
+		metric.WithAttributes(
+			attribute.String("endpoint", endpoint),
+			attribute.String("reason", reason),
+		))
 }
 
 // NewRecorder returns a Recorder that fans out to the given StatsBackend

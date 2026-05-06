@@ -12,7 +12,9 @@ import (
 	"github.com/mudler/xlog"
 )
 
-// usageResponseBody is the minimal structure we need from the response JSON.
+// usageResponseBody is the minimal structure we need from an OpenAI-shaped
+// JSON response. Anthropic responses are decoded separately because their
+// usage block uses different field names (input_tokens / output_tokens).
 type usageResponseBody struct {
 	Model string `json:"model"`
 	Usage *struct {
@@ -22,18 +24,33 @@ type usageResponseBody struct {
 	} `json:"usage"`
 }
 
-// UsageMiddleware extracts token usage from OpenAI-compatible response
-// JSON and records it via the billing.Recorder. Unlike the pre-routing
-// version, this middleware does not short-circuit when auth is off: a
-// no-auth single-user box still records under the synthetic fallback
-// user so dashboards and `/api/usage` work out of the box.
+// anthropicResponseBody covers /v1/messages JSON responses.
+type anthropicResponseBody struct {
+	Model string `json:"model"`
+	Usage *struct {
+		InputTokens  int64 `json:"input_tokens"`
+		OutputTokens int64 `json:"output_tokens"`
+	} `json:"usage"`
+}
+
+// UsageMiddleware records token usage for inference requests via the
+// billing.Recorder. Two paths produce a record:
 //
-// recorder being nil disables recording entirely (e.g., --disable-stats)
-// — the middleware then becomes a transparent pass-through.
+//  1. Handler-stamped (preferred): the request handler called
+//     middleware.StampUsage with the canonical token counts before
+//     returning. This is the only reliable path for streaming responses
+//     — clients rarely set OpenAI's stream_options.include_usage, and
+//     Anthropic's usage lives in a separate message_delta event.
+//  2. Body-parsed (fallback): the response is parsed for an OpenAI- or
+//     Anthropic-shaped usage block. Used by passthrough proxies and
+//     foreign endpoints.
 //
-// fallbackUser is used when auth.GetUser(c) returns nil. It must have a
-// non-empty ID; the billing invariant assertion catches accidental empty
-// IDs that would otherwise cluster all usage under a blank user.
+// Recorder being nil (e.g., --disable-stats) makes the middleware a
+// transparent pass-through. fallbackUser is used when auth.GetUser(c)
+// returns nil; without it, an unauthenticated request would be dropped.
+//
+// Every request that fails to produce a record ticks
+// localai_usage_unrecorded_total so silent billing misses are observable.
 func UsageMiddleware(recorder *billing.Recorder, fallbackUser *auth.User) echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
@@ -43,8 +60,11 @@ func UsageMiddleware(recorder *billing.Recorder, fallbackUser *auth.User) echo.M
 
 			startTime := time.Now()
 
-			// Wrap response writer to capture body so we can parse the
-			// OpenAI/Anthropic usage block at the end of the response.
+			// Wrap response writer to capture body for the fallback parser.
+			// When the handler stamps the context we never read this buffer,
+			// so the cost is the per-chunk Write going through one extra
+			// indirection — accepted overhead in exchange for one billing
+			// path that works for both stamping and body-parse callers.
 			resBody := new(bytes.Buffer)
 			origWriter := c.Response().Writer
 			mw := &bodyWriter{
@@ -57,6 +77,8 @@ func UsageMiddleware(recorder *billing.Recorder, fallbackUser *auth.User) echo.M
 
 			c.Response().Writer = origWriter
 
+			endpoint := c.Request().URL.Path
+
 			if c.Response().Status < 200 || c.Response().Status >= 300 {
 				return handlerErr
 			}
@@ -66,57 +88,30 @@ func UsageMiddleware(recorder *billing.Recorder, fallbackUser *auth.User) echo.M
 				user = fallbackUser
 			}
 			if user == nil || user.ID == "" {
-				// Both real auth and fallback are absent — nothing to attribute.
+				billing.CountUnrecorded(context.Background(), endpoint, "no_user")
 				return handlerErr
 			}
 
-			responseBytes := resBody.Bytes()
-			if len(responseBytes) == 0 {
+			model, prompt, completion, total, ok := tokensFromContext(c)
+			if !ok {
+				model, prompt, completion, total, ok = tokensFromBody(resBody.Bytes(), c.Response().Header().Get("Content-Type"))
+			}
+			if !ok {
+				billing.CountUnrecorded(context.Background(), endpoint, "no_usage")
 				return handlerErr
 			}
 
-			ct := c.Response().Header().Get("Content-Type")
-			isJSON := ct == "" || ct == "application/json" || bytes.HasPrefix([]byte(ct), []byte("application/json"))
-			isSSE := bytes.HasPrefix([]byte(ct), []byte("text/event-stream"))
-			if !isJSON && !isSSE {
-				return handlerErr
-			}
-
-			var resp usageResponseBody
-			if isSSE {
-				last, ok := lastSSEData(responseBytes)
-				if !ok {
-					return handlerErr
-				}
-				if err := json.Unmarshal(last, &resp); err != nil {
-					return handlerErr
-				}
-			} else {
-				if err := json.Unmarshal(responseBytes, &resp); err != nil {
-					return handlerErr
-				}
-			}
-
-			if resp.Usage == nil {
-				return handlerErr
-			}
-
-			// Pull the routing-extension fields off the echo context if
-			// upstream middleware (router, PII filter) populated them.
-			// Each helper falls back to the legacy field when not set, so
-			// records produced before those middlewares land still
-			// validate cleanly.
-			requested, served := modelsFromContext(c, resp.Model)
-			pre, post := promptTokensFromContext(c, resp.Usage.PromptTokens)
+			requested, served := modelsFromContext(c, model)
+			pre, post := promptTokensFromContext(c, prompt)
 
 			record := &auth.UsageRecord{
 				UserID:                 user.ID,
 				UserName:               user.Name,
-				Model:                  resp.Model,
-				Endpoint:               c.Request().URL.Path,
-				PromptTokens:           resp.Usage.PromptTokens,
-				CompletionTokens:       resp.Usage.CompletionTokens,
-				TotalTokens:            resp.Usage.TotalTokens,
+				Model:                  model,
+				Endpoint:               endpoint,
+				PromptTokens:           prompt,
+				CompletionTokens:       completion,
+				TotalTokens:            total,
 				Duration:               time.Since(startTime).Milliseconds(),
 				CreatedAt:              startTime,
 				RequestedModel:         requested,
@@ -127,12 +122,105 @@ func UsageMiddleware(recorder *billing.Recorder, fallbackUser *auth.User) echo.M
 			}
 
 			if err := recorder.Record(context.Background(), record); err != nil {
-				xlog.Error("usage middleware: recorder.Record failed", "error", err, "user", user.ID, "model", resp.Model)
+				xlog.Error("usage middleware: recorder.Record failed", "error", err, "user", user.ID, "model", model)
+				billing.CountUnrecorded(context.Background(), endpoint, "record_failed")
 			}
 
 			return handlerErr
 		}
 	}
+}
+
+// tokensFromContext returns canonical token counts stamped by a handler
+// via middleware.StampUsage. Returns ok=false when no stamp is present
+// — the caller then tries the body-parse fallback.
+//
+// A model name without token counts is not considered "stamped" because a
+// record with zero tokens looks the same as a never-recorded request to
+// later analytics; the second condition is what gates ok.
+func tokensFromContext(c echo.Context) (model string, prompt, completion, total int64, ok bool) {
+	if v, found := c.Get(ContextKeyResponseModel).(string); found {
+		model = v
+	}
+	pPresent := false
+	cPresent := false
+	if v, found := c.Get(ContextKeyPromptTokens).(int64); found {
+		prompt = v
+		pPresent = true
+	}
+	if v, found := c.Get(ContextKeyCompletionTokens).(int64); found {
+		completion = v
+		cPresent = true
+	}
+	if v, found := c.Get(ContextKeyTotalTokens).(int64); found {
+		total = v
+	} else {
+		total = prompt + completion
+	}
+	ok = pPresent || cPresent
+	return
+}
+
+// tokensFromBody covers the passthrough-proxy / foreign-endpoint case
+// where no handler stamps the context. Returns ok=false on any parse
+// failure or missing-usage; the caller increments the unrecorded counter.
+func tokensFromBody(responseBytes []byte, contentType string) (model string, prompt, completion, total int64, ok bool) {
+	if len(responseBytes) == 0 {
+		return
+	}
+	isJSON := contentType == "" || contentType == "application/json" || bytes.HasPrefix([]byte(contentType), []byte("application/json"))
+	isSSE := bytes.HasPrefix([]byte(contentType), []byte("text/event-stream"))
+	if !isJSON && !isSSE {
+		return
+	}
+
+	payload := responseBytes
+	if isSSE {
+		// For SSE, the canonical usage chunk is the *last* non-[DONE] data
+		// line. OpenAI clients only emit one if stream_options.include_usage
+		// is set; Anthropic emits a final message_delta with usage. Both
+		// fit the "last data: line" rule.
+		last, lastOk := lastSSEData(responseBytes)
+		if !lastOk {
+			return
+		}
+		payload = last
+	}
+
+	// Try OpenAI shape first (handles /v1/chat/completions, /v1/completions,
+	// /v1/embeddings, /v1/edits, and any proxy that translates to OpenAI).
+	// A usage block whose token fields all decoded to zero is ambiguous —
+	// it could be an Anthropic body that happens to have a `usage` key —
+	// so fall through to the Anthropic parser instead of recording zeros.
+	var openAI usageResponseBody
+	if err := json.Unmarshal(payload, &openAI); err == nil && openAI.Usage != nil {
+		if openAI.Usage.PromptTokens != 0 || openAI.Usage.CompletionTokens != 0 || openAI.Usage.TotalTokens != 0 {
+			model = openAI.Model
+			prompt = openAI.Usage.PromptTokens
+			completion = openAI.Usage.CompletionTokens
+			total = openAI.Usage.TotalTokens
+			if total == 0 {
+				total = prompt + completion
+			}
+			ok = true
+			return
+		}
+	}
+
+	// Fall through to Anthropic shape (proxy passthrough territory).
+	var ant anthropicResponseBody
+	if err := json.Unmarshal(payload, &ant); err == nil && ant.Usage != nil {
+		if ant.Usage.InputTokens != 0 || ant.Usage.OutputTokens != 0 {
+			model = ant.Model
+			prompt = ant.Usage.InputTokens
+			completion = ant.Usage.OutputTokens
+			total = prompt + completion
+			ok = true
+			return
+		}
+	}
+
+	return
 }
 
 // modelsFromContext returns (requested, served) using context-set values

@@ -797,7 +797,10 @@ func ChatEndpoint(cl *config.ModelConfigLoader, ml *model.ModelLoader, evaluator
 				// still trying to send (e.g., after client disconnect). The goroutine
 				// calls close(responses) when done, which terminates the drain.
 				if input.Context.Err() != nil {
-					go func() { for range responses {} }()
+					go func() {
+						for range responses {
+						}
+					}()
 					<-ended
 				}
 
@@ -916,6 +919,14 @@ func ChatEndpoint(cl *config.ModelConfigLoader, ml *model.ModelLoader, evaluator
 					Object: "chat.completion.chunk",
 				}
 				respData, _ := json.Marshal(resp)
+
+				pt, ct := 0, 0
+				if usage != nil {
+					pt = usage.PromptTokens
+					ct = usage.CompletionTokens
+				}
+				middleware.StampUsage(c, input.Model, pt, ct)
+
 				fmt.Fprintf(c.Response().Writer, "data: %s\n\n", respData)
 
 				// Trailing usage chunk per OpenAI spec: emit only when the
@@ -1289,6 +1300,8 @@ func ChatEndpoint(cl *config.ModelConfigLoader, ml *model.ModelLoader, evaluator
 				}
 				respData, _ := json.Marshal(resp)
 				xlog.Debug("Response", "response", string(respData))
+
+				middleware.StampUsage(c, input.Model, usage.PromptTokens, usage.CompletionTokens)
 
 				// Return the prediction in the response body
 				return c.JSON(200, resp)

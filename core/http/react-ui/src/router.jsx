@@ -45,6 +45,7 @@ import Users from './pages/Users'
 import Account from './pages/Account'
 import RequireAdmin from './components/RequireAdmin'
 import RequireAuth from './components/RequireAuth'
+import RequireAuthEnabled from './components/RequireAuthEnabled'
 import RequireFeature from './components/RequireFeature'
 
 function BrowseRedirect() {
@@ -84,7 +85,7 @@ const appChildren = [
   { path: 'voice/:model', element: <Feature feature="voice_recognition"><VoiceRecognition /></Feature> },
   { path: 'usage', element: <Usage /> },
   { path: 'account', element: <Account /> },
-  { path: 'users', element: <Admin><Users /></Admin> },
+  { path: 'users', element: <RequireAuthEnabled><Admin><Users /></Admin></RequireAuthEnabled> },
   { path: 'manage', element: <Admin><Manage /></Admin> },
   { path: 'backends', element: <Admin><Backends /></Admin> },
   { path: 'settings', element: <Admin><Settings /></Admin> },

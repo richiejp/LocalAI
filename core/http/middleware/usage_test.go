@@ -119,6 +119,76 @@ var _ = Describe("UsageMiddleware", func() {
 		Expect(cap.records).To(BeEmpty())
 	})
 
+	It("records via context-stamped tokens when handler called StampUsage (streaming-safe path)", func() {
+		cap := &captureBackend{}
+		rec := billing.NewRecorder(cap)
+		fallback := &auth.User{ID: "local-uuid", Name: "local"}
+
+		// Simulate a streaming chat handler that emits SSE chunks WITHOUT a
+		// terminal usage block (the common case — clients rarely set
+		// stream_options.include_usage). The handler stamps the canonical
+		// counts on the context just before returning. UsageMiddleware
+		// must record from the stamp, not from body parsing.
+		streamingHandler := func(c echo.Context) error {
+			c.Response().Header().Set("Content-Type", "text/event-stream")
+			c.Response().WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprint(c.Response().Writer, "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n")
+			_, _ = fmt.Fprint(c.Response().Writer, "data: [DONE]\n\n")
+			httpMiddleware.StampUsage(c, "qwen-7b", 9, 5)
+			return nil
+		}
+
+		e := echo.New()
+		e.POST("/v1/chat/completions",
+			streamingHandler,
+			httpMiddleware.UsageMiddleware(rec, fallback),
+		)
+
+		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{}`))
+		w := httptest.NewRecorder()
+		e.ServeHTTP(w, req)
+
+		Expect(w.Code).To(Equal(http.StatusOK))
+		Expect(cap.records).To(HaveLen(1))
+		Expect(cap.records[0].PromptTokens).To(Equal(int64(9)))
+		Expect(cap.records[0].CompletionTokens).To(Equal(int64(5)))
+		Expect(cap.records[0].TotalTokens).To(Equal(int64(14)))
+		Expect(cap.records[0].Model).To(Equal("qwen-7b"))
+	})
+
+	It("falls back to Anthropic body shape when no stamp is present", func() {
+		cap := &captureBackend{}
+		rec := billing.NewRecorder(cap)
+		fallback := &auth.User{ID: "local-uuid", Name: "local"}
+
+		// Simulates a passthrough proxy / foreign endpoint: no handler stamp,
+		// so the middleware must parse the response body. Anthropic's shape
+		// uses input_tokens / output_tokens, not the OpenAI names.
+		anthropicHandler := func(c echo.Context) error {
+			c.Response().Header().Set("Content-Type", "application/json")
+			body := `{"model":"claude-sonnet","usage":{"input_tokens":15,"output_tokens":7}}`
+			return c.String(http.StatusOK, body)
+		}
+
+		e := echo.New()
+		e.POST("/v1/messages",
+			anthropicHandler,
+			httpMiddleware.UsageMiddleware(rec, fallback),
+		)
+
+		req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{}`))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		e.ServeHTTP(w, req)
+
+		Expect(w.Code).To(Equal(http.StatusOK))
+		Expect(cap.records).To(HaveLen(1))
+		Expect(cap.records[0].PromptTokens).To(Equal(int64(15)))
+		Expect(cap.records[0].CompletionTokens).To(Equal(int64(7)))
+		Expect(cap.records[0].TotalTokens).To(Equal(int64(22)))
+		Expect(cap.records[0].Model).To(Equal("claude-sonnet"))
+	})
+
 	It("populates RequestedModel/ServedModel from echo context when set", func() {
 		cap := &captureBackend{}
 		rec := billing.NewRecorder(cap)

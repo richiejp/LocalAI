@@ -313,6 +313,8 @@ func handleAnthropicNonStream(c echo.Context, id string, input *schema.Anthropic
 			xlog.Debug("Anthropic Response", "response", string(respData))
 		}
 
+		middleware.StampUsage(c, input.Model, tokenUsage.Prompt, tokenUsage.Completion)
+
 		return c.JSON(200, resp)
 	} // end MCP iteration loop
 
@@ -672,6 +674,8 @@ func handleAnthropicStream(c echo.Context, id string, input *schema.AnthropicReq
 		sendAnthropicSSE(c, schema.AnthropicStreamEvent{
 			Type: "message_stop",
 		})
+
+		middleware.StampUsage(c, input.Model, tokenUsage.Prompt, tokenUsage.Completion)
 
 		return nil
 	} // end MCP iteration loop

@@ -25,7 +25,6 @@ import (
 	"github.com/mudler/LocalAI/core/schema"
 	"github.com/mudler/LocalAI/core/services/finetune"
 	"github.com/mudler/LocalAI/core/services/galleryop"
-	"github.com/mudler/LocalAI/core/services/monitoring"
 	"github.com/mudler/LocalAI/core/services/nodes"
 	"github.com/mudler/LocalAI/core/services/quantization"
 
@@ -212,19 +211,18 @@ func API(application *application.Application) (*echo.Echo, error) {
 		e.Use(middleware.Recover())
 	}
 
-	// Metrics middleware
-	if !application.ApplicationConfig().DisableMetrics {
-		metricsService, err := monitoring.NewLocalAIMetricsService()
-		if err != nil {
-			return nil, err
-		}
-
-		if metricsService != nil {
-			e.Use(localai.LocalAIMetricsAPIMiddleware(metricsService))
-			e.Server.RegisterOnShutdown(func() {
-				metricsService.Shutdown()
-			})
-		}
+	// Metrics middleware. The metric service was created in
+	// application.start() so the OTel global provider is set before any
+	// counter is registered (the routing-module billing recorder relies
+	// on this). We reuse that instance here rather than calling
+	// monitoring.NewLocalAIMetricsService a second time, which would
+	// create a second provider, second prometheus exporter, and orphan
+	// whichever instance lost the SetMeterProvider race.
+	if metricsService := application.MetricsService(); metricsService != nil {
+		e.Use(localai.LocalAIMetricsAPIMiddleware(metricsService))
+		e.Server.RegisterOnShutdown(func() {
+			metricsService.Shutdown()
+		})
 	}
 
 	// Health Checks should always be exempt from auth, so register these first

@@ -15,6 +15,7 @@ import (
 	"github.com/mudler/LocalAI/core/http/auth"
 	"github.com/mudler/LocalAI/core/services/galleryop"
 	"github.com/mudler/LocalAI/core/services/jobs"
+	"github.com/mudler/LocalAI/core/services/monitoring"
 	"github.com/mudler/LocalAI/core/services/nodes"
 	"github.com/mudler/LocalAI/core/services/routing/billing"
 	"github.com/mudler/LocalAI/core/services/routing/pii"
@@ -130,12 +131,40 @@ func New(opts ...config.AppOption) (*Application, error) {
 		}()
 	}
 
+	// Initialize the OTel + Prometheus metric pipeline before any
+	// counter is created. monitoring.NewLocalAIMetricsService calls
+	// otel.SetMeterProvider, so any subsequent otel.Meter() call —
+	// including billing.NewRecorder below — sees the real provider
+	// rather than the no-op global. Initialising metrics later (in
+	// core/http/app.go) leaves billing's counters bound to a no-op
+	// meter and never reaches /metrics. We deliberately ignore
+	// DisableMetrics here for ordering purposes; the HTTP middleware
+	// that records api_call histograms is still gated.
+	if !options.DisableMetrics {
+		ms, err := monitoring.NewLocalAIMetricsService()
+		if err != nil {
+			xlog.Error("failed to initialize metrics provider", "error", err)
+		} else {
+			application.metricsService = ms
+			// Bind the billing package's counters to the same meter the
+			// metrics service exports. Without this, billing's counters
+			// resolve via the OTel global and never reach /metrics.
+			billing.SetMeter(ms.Meter)
+		}
+	}
+
 	// Wire the routing-module billing recorder. The recorder runs in
 	// every mode (auth on/off, distributed/single-node) so that token
 	// tracking is not gated on auth — a no-auth single-user box still
-	// gets dashboards and `/api/usage` populated. The fallback user is
-	// non-nil only when auth is off; UsageMiddleware uses it to attribute
-	// requests with no authenticated user on the echo context.
+	// gets dashboards and `/api/usage` populated.
+	//
+	// fallbackUser is wired *unconditionally* when stats are enabled.
+	// UsageMiddleware uses it as the attribution source whenever
+	// auth.GetUser(c) is nil — that covers (a) no-auth deployments and
+	// (b) internal callers under auth-on (cron flushers, distributed
+	// worker callbacks) that hit a recordable endpoint without a user
+	// in context. The billing.user_id_present invariant still rejects
+	// empty IDs; LocalUser() returns a stable UUID per data path.
 	if !options.DisableStats {
 		var statsBackend billing.StatsBackend
 		switch {
@@ -144,11 +173,11 @@ func New(opts ...config.AppOption) (*Application, error) {
 			xlog.Info("stats: using auth DB for usage records")
 		default:
 			statsBackend = billing.NewMemoryBackend(0)
-			application.fallbackUser = billing.LocalUser(options.DataPath)
-			xlog.Info("stats: using in-memory ring buffer (no-auth single-user mode)",
-				"local_user_id", application.fallbackUser.ID)
+			xlog.Info("stats: using in-memory ring buffer (no-auth single-user mode)")
 		}
+		application.fallbackUser = billing.LocalUser(options.DataPath)
 		application.statsRecorder = billing.NewRecorder(statsBackend)
+		xlog.Info("stats: fallback user wired", "local_user_id", application.fallbackUser.ID)
 	} else {
 		xlog.Info("stats: disabled by --disable-stats")
 	}

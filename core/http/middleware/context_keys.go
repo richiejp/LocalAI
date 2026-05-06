@@ -30,4 +30,21 @@ const (
 	// key mirrors the same value into echo.Context for in-process
 	// propagation without re-parsing the header.
 	ContextKeyCorrelationID = "routing.correlation_id"
+
+	// ContextKeyPromptTokens / ContextKeyCompletionTokens / ContextKeyTotalTokens
+	// are the canonical token counts the request handler measured. Stamping
+	// these from the handler is the only reliable path for streaming
+	// responses, where the SSE chunks may not include a usage block (OpenAI
+	// requires stream_options.include_usage; Anthropic uses a separate
+	// message_delta event shape). UsageMiddleware prefers these context
+	// values over body-parsing.
+	ContextKeyPromptTokens     = "routing.prompt_tokens"
+	ContextKeyCompletionTokens = "routing.completion_tokens"
+	ContextKeyTotalTokens      = "routing.total_tokens"
+
+	// ContextKeyResponseModel is the model name the handler committed to
+	// in its response payload. UsageMiddleware uses it when neither the
+	// router nor the body-parse path has produced one. Distinct from
+	// ContextKeyServedModel, which is the router's resolved choice.
+	ContextKeyResponseModel = "routing.response_model"
 )

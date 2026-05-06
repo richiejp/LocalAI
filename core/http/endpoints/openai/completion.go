@@ -208,6 +208,14 @@ func CompletionEndpoint(cl *config.ModelConfigLoader, ml *model.ModelLoader, eva
 				Object: "text_completion",
 			}
 			respData, _ := json.Marshal(resp)
+
+			pt, ct := 0, 0
+			if latestUsage != nil {
+				pt = latestUsage.PromptTokens
+				ct = latestUsage.CompletionTokens
+			}
+			middleware.StampUsage(c, input.Model, pt, ct)
+
 			fmt.Fprintf(c.Response().Writer, "data: %s\n\n", respData)
 
 			// Trailing usage chunk per OpenAI spec: emit only when the caller
@@ -273,6 +281,8 @@ func CompletionEndpoint(cl *config.ModelConfigLoader, ml *model.ModelLoader, eva
 
 		jsonResult, _ := json.Marshal(resp)
 		xlog.Debug("Response", "response", string(jsonResult))
+
+		middleware.StampUsage(c, input.Model, totalTokenUsage.Prompt, totalTokenUsage.Completion)
 
 		// Return the prediction in the response body
 		return c.JSON(200, resp)
