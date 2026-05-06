@@ -5,6 +5,7 @@ import SearchableSelect from './SearchableSelect'
 import SearchableModelSelect from './SearchableModelSelect'
 import AutocompleteInput from './AutocompleteInput'
 import CodeEditor from './CodeEditor'
+import PIIPatternListEditor from './PIIPatternListEditor'
 
 // Map autocomplete provider to SearchableModelSelect capability
 const PROVIDER_TO_CAPABILITY = {
@@ -341,6 +342,23 @@ export default function ConfigFieldRenderer({ field, value, onChange, onRemove, 
           </div>
         </div>
         <JsonEditor value={value} onChange={handleChange} />
+      </div>
+    )
+  }
+
+  // PII pattern list — per-model action overrides for named patterns.
+  // The pattern catalog is loaded from /api/pii/patterns at render time
+  // so new built-in patterns surface automatically.
+  if (component === 'pii-pattern-list') {
+    return (
+      <div style={{ padding: 'var(--spacing-sm) 0', borderBottom: '1px solid var(--color-border-subtle)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+          <div>
+            <div style={{ fontSize: '0.875rem', fontWeight: 500 }}><FieldLabel field={field} /></div>
+            <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', marginTop: 2 }}>{description}</div>
+          </div>
+        </div>
+        <PIIPatternListEditor value={value} onChange={handleChange} />
       </div>
     )
   }

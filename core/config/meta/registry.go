@@ -320,5 +320,21 @@ func DefaultRegistry() map[string]FieldMetaOverride {
 			Description: "Enable CUDA for diffusers",
 			Order:       82,
 		},
+
+		// --- PII filtering (per-model) ---
+		"pii.enabled": {
+			Section:     "other",
+			Label:       "PII Filtering Enabled",
+			Description: "Enable PII redaction middleware for this model. Unset means use the default (off for local backends, on for proxy-* / cloud-hosted backends).",
+			Component:   "toggle",
+			Order:       200,
+		},
+		"pii.patterns": {
+			Section:     "other",
+			Label:       "PII Pattern Overrides",
+			Description: "Override the global default action for specific patterns on this model. Patterns not listed here inherit the global action (Settings → Middleware → Filtering).",
+			Component:   "pii-pattern-list",
+			Order:       201,
+		},
 	}
 }
