@@ -14,6 +14,7 @@ import (
 	"github.com/mudler/LocalAI/core/services/routing/pii"
 	"github.com/mudler/LocalAI/core/services/routing/piiadapter"
 	"github.com/mudler/xlog"
+	"golang.org/x/net/http2"
 )
 
 // PIIHandlerOptions configures the PII-aware InterceptHandler that
@@ -56,13 +57,28 @@ type PIIHandlerOptions struct {
 func NewPIIHandler(opts PIIHandlerOptions) InterceptHandler {
 	tlsCfg := opts.UpstreamTLS
 	if tlsCfg == nil {
-		tlsCfg = &tls.Config{NextProtos: []string{"http/1.1"}}
+		tlsCfg = &tls.Config{NextProtos: []string{"h2", "http/1.1"}}
+	} else if len(tlsCfg.NextProtos) == 0 {
+		// Caller supplied a TLS config but didn't set ALPN — fill
+		// it in so the upstream picks h2 when available, falling
+		// back to h1.1 for legacy endpoints.
+		tlsCfg.NextProtos = []string{"h2", "http/1.1"}
+	}
+	transport := &http.Transport{
+		TLSClientConfig:   tlsCfg,
+		ForceAttemptHTTP2: true,
+	}
+	// Custom Transports don't auto-configure h2 the way the default
+	// Transport does, so wire it up explicitly. After this call
+	// net/http picks the h2 path whenever ALPN says "h2".
+	if err := http2.ConfigureTransport(transport); err != nil {
+		// ConfigureTransport only fails if the Transport has been
+		// stripped of TLS. We just built it — log and continue
+		// with HTTP/1.1.
+		xlog.Debug("mitm: http2.ConfigureTransport failed", "error", err)
 	}
 	client := &http.Client{
-		Transport: &http.Transport{
-			TLSClientConfig:   tlsCfg,
-			ForceAttemptHTTP2: false,
-		},
+		Transport: transport,
 		// No top-level timeout: streaming responses can run for
 		// minutes. Per-request deadline is the client conn's, which
 		// the proxy already inherits from the originating CONNECT.

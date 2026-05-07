@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/mudler/xlog"
+	"golang.org/x/net/http2"
 )
 
 // Server is an HTTPS forward proxy that selectively MITMs traffic
@@ -226,11 +227,13 @@ func pipe(a, b net.Conn) {
 	<-done
 }
 
-// handleIntercept terminates TLS using a CA-signed leaf for the
-// requested host, then reads HTTP/1.1 requests off the plaintext
-// stream and dispatches each to the configured handler. Loops until
-// the client closes (Connection: close, EOF, or error) so a single
-// CONNECT can carry multiple requests (HTTP keep-alive).
+// handleIntercept terminates TLS for the requested host using a
+// CA-signed leaf, negotiates the application protocol via ALPN
+// (preferring h2, falling back to http/1.1), and serves the
+// plaintext stream with the matching parser. h2 is the primary
+// path — modern clients negotiate it and Anthropic / OpenAI APIs
+// require it for keep-alive multiplexing. h1.1 stays as a fallback
+// because the ALPN spec mandates an h1 fallback option.
 func (s *Server) handleIntercept(w http.ResponseWriter, r *http.Request, host string) {
 	leaf, err := s.ca.IssueLeaf(host)
 	if err != nil {
@@ -256,18 +259,16 @@ func (s *Server) handleIntercept(w http.ResponseWriter, r *http.Request, host st
 
 	tlsConn := tls.Server(clientConn, &tls.Config{
 		Certificates: []tls.Certificate{*leaf},
-		// HTTP/1.1 only in the MVP. h2 is doable but adds the
-		// golang.org/x/net/http2 dependency for ServeConn and
-		// changes the request-handling model — deferred until we
-		// observe a measurable perf hit on long streaming sessions.
-		NextProtos: []string{"http/1.1"},
+		// h2 first so modern clients (Claude Code, Codex, anything
+		// built on Go/Node since 2018) get HTTP/2. h1.1 stays as a
+		// fallback for the rare client that doesn't speak h2.
+		NextProtos: []string{"h2", "http/1.1"},
 	})
 	defer tlsConn.Close()
 
+	// The deadline below is for the handshake only; we clear it
+	// before serving so long-running streams aren't killed at 30s.
 	if err := tlsConn.SetDeadline(time.Now().Add(s.connectTimeout)); err == nil {
-		// The deadline above is for the handshake; we clear it
-		// before the request loop so long-running streams aren't
-		// killed at 30s.
 		if err := tlsConn.Handshake(); err != nil {
 			xlog.Debug("mitm: TLS handshake failed", "host", host, "error", err)
 			return
@@ -275,6 +276,44 @@ func (s *Server) handleIntercept(w http.ResponseWriter, r *http.Request, host st
 		_ = tlsConn.SetDeadline(time.Time{})
 	}
 
+	// Wrap the InterceptHandler as a standard http.Handler so both
+	// the h2 server and the h1 loop can dispatch through the same
+	// adapter. Closure captures `host` so the handler still receives
+	// the per-host context the InterceptHandler signature expects.
+	handler := http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+		req.URL.Scheme = "https"
+		if req.URL.Host == "" {
+			req.URL.Host = req.Host
+		}
+		s.handler(rw, req, host)
+	})
+
+	switch tlsConn.ConnectionState().NegotiatedProtocol {
+	case "h2":
+		// http2.Server takes the already-TLS-terminated conn and
+		// runs the framing layer + multiplexing internally. We
+		// pass our intercept handler unchanged — h2 streams map
+		// 1:1 to http.Request, just like h1, so the handler shape
+		// doesn't have to know which protocol it's serving.
+		h2srv := &http2.Server{}
+		h2srv.ServeConn(tlsConn, &http2.ServeConnOpts{
+			Handler: handler,
+			Context: r.Context(),
+		})
+	default:
+		// "http/1.1" or empty NegotiatedProtocol (older clients
+		// that don't send ALPN at all). Fall back to the manual
+		// keep-alive loop with the in-package response writer.
+		s.serveHTTP1(tlsConn, handler, host)
+	}
+}
+
+// serveHTTP1 reads HTTP/1.1 requests from a TLS-terminated conn and
+// dispatches each through handler until the client closes or
+// signals Connection: close. Lives separately from the h2 path
+// because http2.Server.ServeConn handles its own request loop;
+// h1.1 has to be done by hand on a hijacked conn.
+func (s *Server) serveHTTP1(tlsConn *tls.Conn, handler http.Handler, host string) {
 	br := bufio.NewReader(tlsConn)
 	for {
 		req, err := http.ReadRequest(br)
@@ -284,20 +323,9 @@ func (s *Server) handleIntercept(w http.ResponseWriter, r *http.Request, host st
 			}
 			return
 		}
-		// http.ReadRequest sets req.URL.Scheme="" and Host from
-		// the request line; populate Scheme so handler code can
-		// build the upstream URL without guessing.
-		req.URL.Scheme = "https"
-		if req.URL.Host == "" {
-			req.URL.Host = req.Host
-		}
-		// Wrap the connection in a minimal ResponseWriter so the
-		// handler can stream the upstream response back.
 		rw := newConnResponseWriter(tlsConn, req)
-		s.handler(rw, req, host)
+		handler.ServeHTTP(rw, req)
 		rw.finish()
-		// If the client (or upstream) signaled close, drop out of
-		// the keep-alive loop.
 		if req.Close || rw.closeAfter {
 			return
 		}

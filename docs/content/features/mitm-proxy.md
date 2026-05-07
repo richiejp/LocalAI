@@ -124,9 +124,9 @@ include MITM events alongside direct-API events.
 - The proxy does not pin upstream certificates; it trusts the system
   certificate store. If your machine's trust store is compromised, the
   proxy is too.
-- TLS termination is HTTP/1.1 only in the MVP; HTTP/2 support is a
-  follow-up. Most CLIs negotiate down without complaint, but a future
-  client that requires h2 will fail the handshake.
+- TLS termination negotiates HTTP/2 by default (ALPN `h2`) and falls
+  back to HTTP/1.1 for clients that don't speak h2. Modern CLIs (Claude
+  Code, Codex) and the Anthropic / OpenAI APIs all use h2.
 
 ## Limitations
 
