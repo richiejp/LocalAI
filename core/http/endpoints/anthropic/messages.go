@@ -15,6 +15,7 @@ import (
 	openaiEndpoint "github.com/mudler/LocalAI/core/http/endpoints/openai"
 	"github.com/mudler/LocalAI/core/http/middleware"
 	"github.com/mudler/LocalAI/core/schema"
+	"github.com/mudler/LocalAI/core/services/cloudproxy"
 	"github.com/mudler/LocalAI/core/services/routing/pii"
 	"github.com/mudler/LocalAI/core/templates"
 	"github.com/mudler/LocalAI/pkg/functions"
@@ -48,6 +49,13 @@ func MessagesEndpoint(cl *config.ModelConfigLoader, ml *model.ModelLoader, evalu
 		}
 
 		xlog.Debug("Anthropic Messages endpoint configuration read", "config", cfg)
+
+		// Cloud-proxy bail. Same gate as the OpenAI chat endpoint —
+		// when Backend = proxy-* and an upstream URL is set, skip
+		// the local pipeline and forward to the upstream provider.
+		if cfg.IsCloudProxy() {
+			return forwardCloudProxyAnthropic(c, cfg, input, piiRedactor, piiEvents)
+		}
 
 		// Convert Anthropic messages to OpenAI format for internal processing
 		openAIMessages := convertAnthropicToOpenAIMessages(input)
@@ -963,4 +971,40 @@ func convertAnthropicTools(input *schema.AnthropicRequest, cfg *config.ModelConf
 	}
 
 	return funcs, len(funcs) > 0 && cfg.ShouldUseFunctions()
+}
+
+// forwardCloudProxyAnthropic mirrors the OpenAI cloud-proxy fork:
+// builds the streaming PII filter (when applicable) and forwards
+// the request body to the upstream Anthropic-shaped provider via
+// the wire-format-faithful proxy. The model name swap and the
+// upstream auth headers are applied inside cloudproxy; the pii
+// filter is constructed here because the auth/correlation context
+// only exists in the echo handler.
+func forwardCloudProxyAnthropic(c echo.Context, cfg *config.ModelConfig, input *schema.AnthropicRequest, piiRedactor *pii.Redactor, piiEvents pii.EventStore) error {
+	body, err := json.Marshal(input)
+	if err != nil {
+		return sendAnthropicError(c, 400, "invalid_request_error", "cloudproxy: marshal request: "+err.Error())
+	}
+
+	var streamFilter *pii.StreamFilter
+	if input.Stream && piiRedactor != nil && cfg.PIIIsEnabled() {
+		correlationID := c.Request().Header.Get("x-request-id")
+		userID := ""
+		if u := auth.GetUser(c); u != nil {
+			userID = u.ID
+		}
+		var overrides map[string]pii.Action
+		if raw := cfg.PIIPatternOverrides(); len(raw) > 0 {
+			overrides = make(map[string]pii.Action, len(raw))
+			for ovid, action := range raw {
+				switch pii.Action(action) {
+				case pii.ActionMask, pii.ActionBlock, pii.ActionRouteLocal:
+					overrides[ovid] = pii.Action(action)
+				}
+			}
+		}
+		streamFilter = pii.NewStreamFilter(piiRedactor, overrides, piiEvents, correlationID, userID)
+	}
+
+	return cloudproxy.Forward(c, cfg, body, streamFilter)
 }

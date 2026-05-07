@@ -13,6 +13,7 @@ import (
 	mcpTools "github.com/mudler/LocalAI/core/http/endpoints/mcp"
 	"github.com/mudler/LocalAI/core/http/middleware"
 	"github.com/mudler/LocalAI/core/schema"
+	"github.com/mudler/LocalAI/core/services/cloudproxy"
 	"github.com/mudler/LocalAI/core/services/routing/pii"
 	"github.com/mudler/LocalAI/pkg/functions"
 	reason "github.com/mudler/LocalAI/pkg/reasoning"
@@ -449,6 +450,17 @@ func ChatEndpoint(cl *config.ModelConfigLoader, ml *model.ModelLoader, evaluator
 		}
 
 		xlog.Debug("Chat endpoint configuration read", "config", config)
+
+		// Cloud-proxy bail. When the resolved model is configured as
+		// a cloud passthrough (Backend = proxy-* and a non-empty
+		// upstream URL), bypass the entire local pipeline —
+		// templating, MCP injection, gRPC backend — and forward the
+		// request to the upstream provider. The streaming PII
+		// filter still runs because its input is per-token text
+		// extracted from the wire envelope, not the envelope itself.
+		if config.IsCloudProxy() {
+			return forwardCloudProxyOpenAI(c, config, input, piiRedactor, piiEvents)
+		}
 
 		funcs := input.Functions
 		shouldUseFn := len(input.Functions) > 0 && config.ShouldUseFunctions()
@@ -1446,4 +1458,44 @@ func handleQuestion(config *config.ModelConfig, funcResults []functions.FuncCall
 	xlog.Debug("No action received from LLM, without a message, computing a reply")
 
 	return "", nil
+}
+
+// forwardCloudProxyOpenAI builds the streaming PII filter (when this
+// model has PII enabled) and hands the request off to the cloudproxy
+// package. The chat endpoint is the only place the OpenAI request
+// lands as a parsed *schema.OpenAIRequest, so we do the model rewrite
+// + body marshalling here rather than inside cloudproxy (which keeps
+// that package free of schema imports).
+//
+// Defined here rather than as a method on cloudproxy because the
+// caller owns the lifecycle of the PII filter — every other streaming
+// path in this file constructs its own filter inline, and we keep the
+// proxy fork structurally similar.
+func forwardCloudProxyOpenAI(c echo.Context, cfg *config.ModelConfig, input *schema.OpenAIRequest, piiRedactor *pii.Redactor, piiEvents pii.EventStore) error {
+	body, err := json.Marshal(input)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, "cloudproxy: marshal request: "+err.Error())
+	}
+
+	var streamFilter *pii.StreamFilter
+	if input.Stream && piiRedactor != nil && cfg.PIIIsEnabled() {
+		correlationID := c.Response().Header().Get("X-Correlation-ID")
+		userID := ""
+		if u := auth.GetUser(c); u != nil {
+			userID = u.ID
+		}
+		var overrides map[string]pii.Action
+		if raw := cfg.PIIPatternOverrides(); len(raw) > 0 {
+			overrides = make(map[string]pii.Action, len(raw))
+			for ovid, action := range raw {
+				switch pii.Action(action) {
+				case pii.ActionMask, pii.ActionBlock, pii.ActionRouteLocal:
+					overrides[ovid] = pii.Action(action)
+				}
+			}
+		}
+		streamFilter = pii.NewStreamFilter(piiRedactor, overrides, piiEvents, correlationID, userID)
+	}
+
+	return cloudproxy.Forward(c, cfg, body, streamFilter)
 }

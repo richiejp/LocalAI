@@ -336,5 +336,41 @@ func DefaultRegistry() map[string]FieldMetaOverride {
 			Component:   "pii-pattern-list",
 			Order:       201,
 		},
+
+		// --- Cloud passthrough proxy ---
+		// These only have an effect when Backend is set to a
+		// "proxy-*" name (e.g. proxy-openai, proxy-anthropic). When
+		// the upstream URL is empty, the model fails closed — the
+		// chat handler does NOT silently fall back to the local
+		// gRPC pipeline.
+		"proxy.upstream_url": {
+			Section:     "other",
+			Label:       "Proxy Upstream URL",
+			Description: "Full POST endpoint of the upstream provider (e.g. https://api.openai.com/v1/chat/completions). Only used when Backend starts with proxy-.",
+			Component:   "input",
+			Order:       210,
+		},
+		"proxy.api_key_env": {
+			Section:     "other",
+			Label:       "Proxy API Key Env Var",
+			Description: "Name of the environment variable holding the upstream API key. Reading from env keeps the secret out of the YAML and the admin UI.",
+			Component:   "input",
+			Order:       211,
+		},
+		"proxy.upstream_model": {
+			Section:     "other",
+			Label:       "Proxy Upstream Model",
+			Description: "Model name sent to the upstream. Leave empty to forward the client's model field unchanged. Useful when the LocalAI alias differs from the upstream's canonical name.",
+			Component:   "input",
+			Order:       212,
+		},
+		"proxy.request_timeout_seconds": {
+			Section:     "other",
+			Label:       "Proxy Request Timeout (seconds)",
+			Description: "Caps the upstream HTTP request duration. 0 disables the deadline; the request still ends when the client disconnects.",
+			Component:   "number",
+			Min:         f64(0),
+			Order:       213,
+		},
 	}
 }

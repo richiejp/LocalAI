@@ -99,6 +99,54 @@ type ModelConfig struct {
 	Agent  AgentConfig  `yaml:"agent,omitempty" json:"agent,omitempty"`
 	PII    PIIConfig    `yaml:"pii,omitempty" json:"pii,omitempty"`
 	Router RouterConfig `yaml:"router,omitempty" json:"router,omitempty"`
+	Proxy  ProxyConfig  `yaml:"proxy,omitempty" json:"proxy,omitempty"`
+}
+
+// @Description Cloud passthrough proxy configuration. When the backend
+// name starts with "proxy-" and a non-empty UpstreamURL is set, the
+// chat / messages handler bypasses the gRPC backend pipeline and
+// forwards the request to the upstream provider, streaming the SSE
+// response back to the client untouched (apart from the streaming PII
+// filter, which still runs because it operates on extracted token
+// text rather than the wire envelope).
+//
+// The provider is inferred from Backend ("proxy-openai" → openai
+// chat-completions wire shape; "proxy-anthropic" → anthropic messages
+// wire shape). No request-shape translation is performed in the MVP —
+// the client must speak the same wire format as the upstream.
+type ProxyConfig struct {
+	// UpstreamURL is the full POST endpoint, e.g.
+	// https://api.openai.com/v1/chat/completions or
+	// https://api.anthropic.com/v1/messages. Empty disables the
+	// proxy bail even when Backend is proxy-*.
+	UpstreamURL string `yaml:"upstream_url,omitempty" json:"upstream_url,omitempty"`
+
+	// APIKeyEnv names the environment variable holding the upstream
+	// API key. Reading from env (rather than embedding the key in
+	// YAML) keeps secrets out of the config files and the admin UI.
+	APIKeyEnv string `yaml:"api_key_env,omitempty" json:"api_key_env,omitempty"`
+
+	// UpstreamModel overrides the model name sent to the upstream.
+	// Useful when the LocalAI-facing model alias differs from the
+	// upstream's canonical name (e.g. local "claude-strict" maps to
+	// upstream "claude-3-5-sonnet-20241022"). Empty means forward
+	// the client's model field unchanged.
+	UpstreamModel string `yaml:"upstream_model,omitempty" json:"upstream_model,omitempty"`
+
+	// RequestTimeoutSeconds caps the upstream request duration. 0
+	// means no per-request timeout (only the request context, which
+	// is bound to the client connection, applies).
+	RequestTimeoutSeconds int `yaml:"request_timeout_seconds,omitempty" json:"request_timeout_seconds,omitempty"`
+}
+
+// IsCloudProxy returns true when this model is configured to forward
+// requests to an external provider rather than running through the
+// local gRPC backend pipeline. The Backend prefix is the gating
+// signal (it also drives the PII default-on rule in PIIIsEnabled);
+// UpstreamURL must additionally be non-empty so a half-configured
+// proxy fails closed instead of silently routing nowhere.
+func (c *ModelConfig) IsCloudProxy() bool {
+	return strings.HasPrefix(c.Backend, "proxy-") && c.Proxy.UpstreamURL != ""
 }
 
 // @Description Intelligent routing configuration. When a model declares
