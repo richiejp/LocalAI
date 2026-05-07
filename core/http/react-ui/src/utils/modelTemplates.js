@@ -74,6 +74,36 @@ const MODEL_TEMPLATES = [
       'embeddings': true,
     },
   },
+  {
+    id: 'proxy-openai',
+    label: 'OpenAI Proxy',
+    icon: 'fa-cloud',
+    description: 'Forward chat completions to OpenAI or any OpenAI-compatible provider; PII redaction runs in flight',
+    fields: {
+      'name': '',
+      'backend': 'proxy-openai',
+      'proxy.upstream_url': 'https://api.openai.com/v1/chat/completions',
+      'proxy.api_key_env': 'OPENAI_API_KEY',
+      'proxy.upstream_model': '',
+      'proxy.request_timeout_seconds': 120,
+      'pii.enabled': true,
+    },
+  },
+  {
+    id: 'proxy-anthropic',
+    label: 'Anthropic Proxy',
+    icon: 'fa-cloud',
+    description: 'Forward Messages API requests to Anthropic; PII redaction runs in flight',
+    fields: {
+      'name': '',
+      'backend': 'proxy-anthropic',
+      'proxy.upstream_url': 'https://api.anthropic.com/v1/messages',
+      'proxy.api_key_env': 'ANTHROPIC_API_KEY',
+      'proxy.upstream_model': '',
+      'proxy.request_timeout_seconds': 300,
+      'pii.enabled': true,
+    },
+  },
 ]
 
 export default MODEL_TEMPLATES
