@@ -105,6 +105,44 @@ parameters:
   model: /path/to/model.gguf
 `
 
+// PROXY_TEMPLATES are starter YAMLs for cloud-passthrough models —
+// the chat / messages handler bypasses the gRPC backend pipeline
+// and forwards directly to the upstream provider. The api_key_env
+// pattern keeps secrets out of the YAML and the admin UI.
+const PROXY_TEMPLATES = {
+  'proxy-openai': {
+    label: 'OpenAI proxy',
+    icon: 'fas fa-cloud',
+    yaml: `name: gpt-4o-proxy
+backend: proxy-openai
+proxy:
+  upstream_url: https://api.openai.com/v1/chat/completions
+  api_key_env: OPENAI_API_KEY
+  upstream_model: gpt-4o
+  request_timeout_seconds: 120
+pii:
+  enabled: true
+`,
+  },
+  'proxy-anthropic': {
+    label: 'Anthropic proxy',
+    icon: 'fas fa-cloud',
+    yaml: `name: claude-sonnet-proxy
+backend: proxy-anthropic
+proxy:
+  upstream_url: https://api.anthropic.com/v1/messages
+  api_key_env: ANTHROPIC_API_KEY
+  upstream_model: claude-3-5-sonnet-20241022
+  request_timeout_seconds: 300
+pii:
+  enabled: true
+  patterns:
+    - id: api_key_prefix
+      action: block
+`,
+  },
+}
+
 const DEFAULT_PREFS = {
   backend: '', name: '', description: '', quantizations: '',
   mmproj_quantizations: '', embeddings: false, type: '',
@@ -931,14 +969,28 @@ export default function ImportModel() {
               <div style={{ padding: 'var(--spacing-md)' }}>
                 <PowerTabs value={powerTab} onChange={setPowerTab} />
               </div>
-              <div style={{ padding: 'var(--spacing-md)', borderTop: '1px solid var(--color-border-default)', borderBottom: '1px solid var(--color-border-default)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div style={{ padding: 'var(--spacing-md)', borderTop: '1px solid var(--color-border-default)', borderBottom: '1px solid var(--color-border-default)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 'var(--spacing-sm)', flexWrap: 'wrap' }}>
                 <h2 style={{ fontSize: '1.125rem', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 'var(--spacing-sm)' }}>
                   <i className="fas fa-code" aria-hidden="true" style={{ color: 'var(--color-data-3)' }} />
                   {t('form.yamlEditor')}
                 </h2>
-                <button className="btn btn-secondary" style={{ fontSize: '0.75rem' }} onClick={() => { navigator.clipboard.writeText(yamlContent); addToast(t('toasts.copied'), 'success') }}>
-                  <i className="fas fa-copy" aria-hidden="true" /> {t('actions.copy')}
-                </button>
+                <div style={{ display: 'flex', gap: 'var(--spacing-xs)', alignItems: 'center', flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)' }}>{t('templates.label')}</span>
+                  {Object.entries(PROXY_TEMPLATES).map(([key, tpl]) => (
+                    <button
+                      key={key}
+                      className="btn btn-ghost"
+                      style={{ fontSize: '0.75rem' }}
+                      onClick={() => { setYamlContent(tpl.yaml); addToast(t('templates.applied', { label: tpl.label }), 'success') }}
+                      data-testid={`template-${key}`}
+                    >
+                      <i className={tpl.icon} aria-hidden="true" /> {tpl.label}
+                    </button>
+                  ))}
+                  <button className="btn btn-secondary" style={{ fontSize: '0.75rem' }} onClick={() => { navigator.clipboard.writeText(yamlContent); addToast(t('toasts.copied'), 'success') }}>
+                    <i className="fas fa-copy" aria-hidden="true" /> {t('actions.copy')}
+                  </button>
+                </div>
               </div>
               <CodeEditor value={yamlContent} onChange={setYamlContent} disabled={isSubmitting} minHeight="calc(100vh - 400px)" />
             </>
