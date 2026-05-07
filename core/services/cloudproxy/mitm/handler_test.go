@@ -232,7 +232,8 @@ func TestRedactRequest_AnthropicShape(t *testing.T) {
 	r := pii.NewRedactor(patterns)
 	body := []byte(`{"model":"claude","max_tokens":10,"messages":[{"role":"user","content":"reach me at bob@example.org"}]}`)
 
-	out, blocked, err := redactRequest(body, shapeAnthropicMessages, r, nil, "corr-1")
+	d := &piiDispatcher{redactor: r, patternAction: map[string]pii.Action{}}
+	out, blocked, err := d.redactRequest(body, shapeAnthropicMessages, "corr-1")
 	if err != nil {
 		t.Fatal(err)
 	}

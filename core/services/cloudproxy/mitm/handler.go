@@ -9,79 +9,51 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 
 	"github.com/mudler/LocalAI/core/schema"
+	"github.com/mudler/LocalAI/core/services/cloudproxy/ssewire"
 	"github.com/mudler/LocalAI/core/services/routing/pii"
 	"github.com/mudler/LocalAI/core/services/routing/piiadapter"
 	"github.com/mudler/xlog"
 	"golang.org/x/net/http2"
 )
 
-// PIIHandlerOptions configures the PII-aware InterceptHandler that
-// LocalAI's MITM proxy uses by default. The handler runs the global
-// redactor on inbound chat-style requests and the streaming filter
-// on outbound SSE responses; everything else (auth, OAuth callback
-// endpoints, telemetry) passes through with the upstream's bytes
-// unchanged.
+// PIIHandlerOptions configures NewPIIHandler.
 type PIIHandlerOptions struct {
-	// Redactor is the regex PII redactor. nil disables redaction —
-	// the handler then becomes a plain forwarding proxy, useful for
-	// observability-only deployments.
+	// Redactor is the regex PII redactor. nil disables redaction.
 	Redactor *pii.Redactor
 
 	// EventStore receives PIIEvent rows. nil discards events.
 	EventStore pii.EventStore
 
-	// UpstreamTLS is the tls.Config used when the proxy dials the
+	// UpstreamTLS overrides the tls.Config used when dialing the
 	// real upstream. Defaults to a system-trust HTTPS client.
-	// Override in tests to trust a self-signed httptest fixture.
 	UpstreamTLS *tls.Config
 
 	// CorrelationIDHeader names the request header carrying a
-	// caller-supplied correlation ID. Defaults to "X-Correlation-ID";
-	// Anthropic clients also send "x-request-id".
+	// caller-supplied correlation ID. Defaults to "X-Correlation-ID".
 	CorrelationIDHeader string
 
 	// DialHost optionally remaps the host used for the outbound
-	// upstream URL. Identity by default. Tests inject a httptest
-	// listener address here so the handler can keep classifying on
-	// the original "api.anthropic.com" name while actually dialing
-	// 127.0.0.1:NNNN.
+	// upstream URL. Identity by default; tests inject a httptest
+	// listener address.
 	DialHost func(host string) string
 }
 
-// NewPIIHandler returns the InterceptHandler that performs request
-// + streaming redaction. The returned handler is the production
-// dispatch — tests in this package use the simpler passthrough
-// fixture in proxy_test.go.
 func NewPIIHandler(opts PIIHandlerOptions) InterceptHandler {
 	tlsCfg := opts.UpstreamTLS
 	if tlsCfg == nil {
 		tlsCfg = &tls.Config{NextProtos: []string{"h2", "http/1.1"}}
 	} else if len(tlsCfg.NextProtos) == 0 {
-		// Caller supplied a TLS config but didn't set ALPN — fill
-		// it in so the upstream picks h2 when available, falling
-		// back to h1.1 for legacy endpoints.
 		tlsCfg.NextProtos = []string{"h2", "http/1.1"}
 	}
 	transport := &http.Transport{
 		TLSClientConfig:   tlsCfg,
 		ForceAttemptHTTP2: true,
 	}
-	// Custom Transports don't auto-configure h2 the way the default
-	// Transport does, so wire it up explicitly. After this call
-	// net/http picks the h2 path whenever ALPN says "h2".
 	if err := http2.ConfigureTransport(transport); err != nil {
-		// ConfigureTransport only fails if the Transport has been
-		// stripped of TLS. We just built it — log and continue
-		// with HTTP/1.1.
 		xlog.Debug("mitm: http2.ConfigureTransport failed", "error", err)
-	}
-	client := &http.Client{
-		Transport: transport,
-		// No top-level timeout: streaming responses can run for
-		// minutes. Per-request deadline is the client conn's, which
-		// the proxy already inherits from the originating CONNECT.
 	}
 
 	corrHeader := opts.CorrelationIDHeader
@@ -94,19 +66,35 @@ func NewPIIHandler(opts PIIHandlerOptions) InterceptHandler {
 		dialHost = func(h string) string { return h }
 	}
 
-	return func(w http.ResponseWriter, r *http.Request, host string) {
-		dispatchPIIIntercept(w, r, host, dialHost(host), client, opts.Redactor, opts.EventStore, corrHeader)
+	patternAction := map[string]pii.Action{}
+	if opts.Redactor != nil {
+		for _, p := range opts.Redactor.Patterns() {
+			patternAction[p.ID] = p.Action
+		}
 	}
+
+	d := &piiDispatcher{
+		client:        &http.Client{Transport: transport},
+		redactor:      opts.Redactor,
+		store:         opts.EventStore,
+		patternAction: patternAction,
+		corrHeader:    corrHeader,
+		dialHost:      dialHost,
+	}
+	return d.serve
 }
 
-// dispatchPIIIntercept does the per-request work for the PII
-// handler: detect the request shape, redact, forward, and stream
-// the response. Pulled out as a free function so the handler
-// closure stays trivially testable.
-func dispatchPIIIntercept(w http.ResponseWriter, r *http.Request, host, dialHost string, client *http.Client, redactor *pii.Redactor, store pii.EventStore, corrHeader string) {
-	// Read the inbound body once. We need to parse it for
-	// redaction and then re-send the (possibly mutated) bytes to
-	// the upstream — http.Request.Body is single-shot.
+type piiDispatcher struct {
+	client        *http.Client
+	redactor      *pii.Redactor
+	store         pii.EventStore
+	patternAction map[string]pii.Action
+	corrHeader    string
+	dialHost      func(host string) string
+	eventSeq      atomic.Uint64
+}
+
+func (d *piiDispatcher) serve(w http.ResponseWriter, r *http.Request, host string) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		http.Error(w, "mitm: read body: "+err.Error(), http.StatusBadGateway)
@@ -114,42 +102,36 @@ func dispatchPIIIntercept(w http.ResponseWriter, r *http.Request, host, dialHost
 	}
 	_ = r.Body.Close()
 
-	correlationID := r.Header.Get(corrHeader)
+	correlationID := r.Header.Get(d.corrHeader)
 	if correlationID == "" {
 		correlationID = r.Header.Get("x-request-id")
 	}
 
-	// Decide whether to redact based on the request path. Only
-	// chat-style endpoints carry user prose; OAuth, listing, and
-	// metadata endpoints get an unmodified passthrough.
 	shape := classifyRequestShape(host, r.URL.Path)
-	if redactor != nil && shape != shapeUnknown {
-		redacted, blocked, err := redactRequest(body, shape, redactor, store, correlationID)
-		if err != nil {
+	if d.redactor != nil && shape != shapeUnknown {
+		redacted, blocked, err := d.redactRequest(body, shape, correlationID)
+		switch {
+		case err != nil:
 			xlog.Debug("mitm: redact request failed; forwarding unchanged", "host", host, "path", r.URL.Path, "error", err)
-		} else {
-			if blocked {
-				writePIIBlocked(w, correlationID)
-				return
-			}
+		case blocked:
+			writePIIBlocked(w, correlationID)
+			return
+		default:
 			body = redacted
 		}
 	}
 
-	upstreamURL := "https://" + dialHost + r.URL.RequestURI()
+	upstreamURL := "https://" + d.dialHost(host) + r.URL.RequestURI()
 	upstreamReq, err := http.NewRequestWithContext(r.Context(), r.Method, upstreamURL, bytes.NewReader(body))
 	if err != nil {
 		http.Error(w, "mitm: build upstream request: "+err.Error(), http.StatusBadGateway)
 		return
 	}
-	// Copy headers from the client request, but drop hop-by-hop
-	// ones the proxy must regenerate.
 	upstreamReq.Header = cloneHopByHopFiltered(r.Header)
-	// Content-Length must reflect the (possibly-mutated) body.
 	upstreamReq.ContentLength = int64(len(body))
 	upstreamReq.Header.Set("Content-Length", fmt.Sprintf("%d", len(body)))
 
-	resp, err := client.Do(upstreamReq)
+	resp, err := d.client.Do(upstreamReq)
 	if err != nil {
 		http.Error(w, "mitm: upstream: "+err.Error(), http.StatusBadGateway)
 		return
@@ -157,8 +139,6 @@ func dispatchPIIIntercept(w http.ResponseWriter, r *http.Request, host, dialHost
 	defer resp.Body.Close()
 
 	for k, vs := range resp.Header {
-		// Skip hop-by-hop headers and transfer-encoding (the
-		// connResponseWriter sets its own framing).
 		if isHopByHop(k) || strings.EqualFold(k, "Transfer-Encoding") || strings.EqualFold(k, "Content-Length") {
 			continue
 		}
@@ -168,37 +148,34 @@ func dispatchPIIIntercept(w http.ResponseWriter, r *http.Request, host, dialHost
 	}
 	w.WriteHeader(resp.StatusCode)
 
-	// Streaming responses (SSE) get the StreamFilter treatment.
-	// Non-streaming responses are forwarded byte-for-byte.
-	if shape != shapeUnknown && redactor != nil && isSSE(resp.Header.Get("Content-Type")) {
-		streamWithPII(w, resp.Body, shape, redactor, store, correlationID)
+	contentType := resp.Header.Get("Content-Type")
+	if shape != shapeUnknown && d.redactor != nil && isSSE(contentType) {
+		d.streamWithPII(w, resp.Body, shape, correlationID)
 		return
 	}
 
-	// Plain copy. SSE responses for unknown shapes also land here.
-	flusher, _ := w.(http.Flusher)
-	buf := make([]byte, 32*1024)
-	for {
-		n, rErr := resp.Body.Read(buf)
-		if n > 0 {
-			if _, wErr := w.Write(buf[:n]); wErr != nil {
+	if isSSE(contentType) {
+		flusher, _ := w.(http.Flusher)
+		buf := make([]byte, 32*1024)
+		for {
+			n, rErr := resp.Body.Read(buf)
+			if n > 0 {
+				if _, wErr := w.Write(buf[:n]); wErr != nil {
+					return
+				}
+				if flusher != nil {
+					flusher.Flush()
+				}
+			}
+			if rErr != nil {
 				return
 			}
-			if flusher != nil {
-				flusher.Flush()
-			}
-		}
-		if rErr != nil {
-			return
 		}
 	}
+
+	_, _ = io.Copy(w, resp.Body)
 }
 
-// requestShape classifies a host+path pair into a recognised LLM
-// API request shape so we can pick the right adapter / streaming
-// parser. shapeUnknown means "forward verbatim" — any host or path
-// not on the small recognised set passes through, including OAuth,
-// usage, and listing endpoints on api.anthropic.com itself.
 type requestShape int
 
 const (
@@ -218,11 +195,7 @@ func classifyRequestShape(host, path string) requestShape {
 	return shapeUnknown
 }
 
-// redactRequest parses the request body, runs the appropriate
-// piiadapter, and re-marshals. blocked=true when the redactor
-// returned at least one Block action — the caller short-circuits
-// the upstream call and writes a synthetic 400.
-func redactRequest(body []byte, shape requestShape, redactor *pii.Redactor, store pii.EventStore, correlationID string) ([]byte, bool, error) {
+func (d *piiDispatcher) redactRequest(body []byte, shape requestShape, correlationID string) ([]byte, bool, error) {
 	var parsed any
 	var adapter pii.Adapter
 	switch shape {
@@ -255,11 +228,11 @@ func redactRequest(body []byte, shape requestShape, redactor *pii.Redactor, stor
 		if st.Text == "" {
 			continue
 		}
-		res := redactor.RedactWithOverrides(st.Text, nil)
+		res := d.redactor.RedactWithOverrides(st.Text, nil)
 		if len(res.Spans) == 0 {
 			continue
 		}
-		recordEvents(store, res.Spans, correlationID, redactor)
+		d.recordEvents(res.Spans, correlationID)
 		if res.Blocked {
 			blocked = true
 		}
@@ -277,47 +250,34 @@ func redactRequest(body []byte, shape requestShape, redactor *pii.Redactor, stor
 	return out, blocked, nil
 }
 
-// recordEvents persists one PIIEvent per redaction span. The
-// MITM context doesn't have a user (no LocalAI auth header on
-// CLI traffic) so UserID is empty — admins can still
-// correlate by request ID.
-func recordEvents(store pii.EventStore, spans []pii.Span, correlationID string, redactor *pii.Redactor) {
-	if store == nil {
+func (d *piiDispatcher) recordEvents(spans []pii.Span, correlationID string) {
+	if d.store == nil {
 		return
-	}
-	patterns := redactor.Patterns()
-	patternAction := make(map[string]pii.Action, len(patterns))
-	for _, p := range patterns {
-		patternAction[p.ID] = p.Action
 	}
 	for _, span := range spans {
 		ev := pii.PIIEvent{
-			ID:            "mitm_" + correlationID + "_" + span.Pattern,
+			ID:            fmt.Sprintf("mitm_%s_%d", correlationID, d.eventSeq.Add(1)),
 			CorrelationID: correlationID,
 			Direction:     pii.DirectionIn,
 			PatternID:     span.Pattern,
 			ByteOffset:    span.Start,
 			Length:        span.End - span.Start,
 			HashPrefix:    span.HashPrefix,
-			Action:        patternAction[span.Pattern],
+			Action:        d.patternAction[span.Pattern],
 		}
-		_ = store.Record(context.Background(), ev)
+		if err := d.store.Record(context.Background(), ev); err != nil {
+			xlog.Debug("mitm: failed to record pii event", "error", err, "pattern", span.Pattern)
+		}
 	}
 }
 
-// streamWithPII reads SSE events from the upstream, runs each
-// content-bearing payload through the streaming filter, and writes
-// the (possibly rewritten) bytes to the client. Built directly on
-// bufio rather than reusing cloudproxy's scanner to keep the MITM
-// package self-contained — the SSE shape is the same on both
-// providers and the parser is small.
-func streamWithPII(w http.ResponseWriter, src io.Reader, shape requestShape, redactor *pii.Redactor, store pii.EventStore, correlationID string) {
+func (d *piiDispatcher) streamWithPII(w http.ResponseWriter, src io.Reader, shape requestShape, correlationID string) {
 	flusher, _ := w.(http.Flusher)
-	filter := pii.NewStreamFilter(redactor, nil, store, correlationID, "")
+	filter := pii.NewStreamFilter(d.redactor, nil, d.store, correlationID, "")
 
-	provider := "openai"
+	provider := ssewire.OpenAI
 	if shape == shapeAnthropicMessages {
-		provider = "anthropic"
+		provider = ssewire.Anthropic
 	}
 
 	emit := func(s string) {
@@ -327,30 +287,30 @@ func streamWithPII(w http.ResponseWriter, src io.Reader, shape requestShape, red
 		}
 	}
 
-	scanner := newCloudproxyScanner(src)
+	scanner := ssewire.NewScanner(src)
 	for scanner.Scan() {
 		ev := scanner.Event()
-		if isTerminalSSE(ev.dataLine, provider) {
+		if ssewire.IsTerminalMarker(ev.DataLine, provider) {
 			if residual := filter.Drain(); residual != "" {
-				emit(synthSSEResidual(provider, residual))
+				emit(ssewire.SynthResidualEvent(provider, residual))
 			}
-			emit(ev.raw)
+			emit(ev.Raw)
 			continue
 		}
-		out := ev.raw
-		if ev.dataLine != "" {
-			rewritten, drop := rewriteSSEPayload(ev.dataLine, provider, filter)
+		out := ev.Raw
+		if ev.DataLine != "" {
+			rewritten, drop := ssewire.RewritePayload(ev.DataLine, provider, filter)
 			if drop {
 				continue
 			}
-			if rewritten != ev.dataLine {
-				out = strings.Replace(ev.raw, ev.dataLine, rewritten, 1)
+			if rewritten != ev.DataLine {
+				out = strings.Replace(ev.Raw, ev.DataLine, rewritten, 1)
 			}
 		}
 		emit(out)
 	}
 	if residual := filter.Drain(); residual != "" {
-		emit(synthSSEResidual(provider, residual))
+		emit(ssewire.SynthResidualEvent(provider, residual))
 	}
 }
 
@@ -371,9 +331,7 @@ func isSSE(contentType string) bool {
 	return strings.HasPrefix(strings.TrimSpace(contentType), "text/event-stream")
 }
 
-// hopByHopHeaders are the request/response headers that must not
-// be forwarded by an HTTP proxy per RFC 7230 §6.1. The proxy
-// regenerates these as needed.
+// hopByHopHeaders are not forwarded by the proxy (RFC 7230 §6.1).
 var hopByHopHeaders = map[string]struct{}{
 	"Connection":          {},
 	"Keep-Alive":          {},

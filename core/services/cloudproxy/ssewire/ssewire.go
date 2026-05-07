@@ -1,4 +1,10 @@
-package mitm
+// Package ssewire holds the SSE-format helpers shared between
+// the request-shape cloud proxy (core/services/cloudproxy) and the
+// TLS-terminating MITM proxy (core/services/cloudproxy/mitm). Both
+// run a pii.StreamFilter over per-token text extracted from
+// provider-specific JSON chunks; this package owns the JSON shapes
+// so a future provider addition is one edit, not two.
+package ssewire
 
 import (
 	"bufio"
@@ -9,30 +15,34 @@ import (
 	"github.com/mudler/LocalAI/core/services/routing/pii"
 )
 
-// sseEvent is one SSE event with its exact wire bytes preserved
-// in raw (so unmodified events round-trip byte-for-byte) and the
-// extracted JSON payload from the data: line in dataLine.
-type sseEvent struct {
-	raw      string
-	dataLine string
+// Provider is the upstream wire format an SSE stream conforms to.
+type Provider string
+
+const (
+	OpenAI    Provider = "openai"
+	Anthropic Provider = "anthropic"
+)
+
+// Event is one SSE event with its exact wire bytes preserved in
+// Raw (so unmodified events round-trip byte-for-byte) and the
+// extracted JSON payload from the data: line in DataLine.
+type Event struct {
+	Raw      string
+	DataLine string
 }
 
-type sseScanner struct {
+// Scanner reads SSE events one at a time from an upstream body.
+type Scanner struct {
 	r   *bufio.Reader
-	ev  sseEvent
+	ev  Event
 	err error
 }
 
-// newCloudproxyScanner returns an SSE scanner with the same shape
-// as the one in core/services/cloudproxy. Duplicated here so the
-// mitm package doesn't import cloudproxy (which imports schema —
-// keeping mitm small and dep-light is worth ~80 lines of
-// duplication).
-func newCloudproxyScanner(r io.Reader) *sseScanner {
-	return &sseScanner{r: bufio.NewReaderSize(r, 64*1024)}
+func NewScanner(r io.Reader) *Scanner {
+	return &Scanner{r: bufio.NewReaderSize(r, 64*1024)}
 }
 
-func (s *sseScanner) Scan() bool {
+func (s *Scanner) Scan() bool {
 	var raw strings.Builder
 	var dataLine string
 	for {
@@ -45,21 +55,19 @@ func (s *sseScanner) Scan() bool {
 					raw.Reset()
 					continue
 				}
-				s.ev = sseEvent{raw: raw.String(), dataLine: dataLine}
+				s.ev = Event{Raw: raw.String(), DataLine: dataLine}
 				return true
 			}
-			if strings.HasPrefix(trimmed, "data:") {
-				if dataLine == "" {
-					payload := strings.TrimPrefix(trimmed, "data:")
-					payload = strings.TrimPrefix(payload, " ")
-					dataLine = payload
-				}
+			if strings.HasPrefix(trimmed, "data:") && dataLine == "" {
+				payload := strings.TrimPrefix(trimmed, "data:")
+				payload = strings.TrimPrefix(payload, " ")
+				dataLine = payload
 			}
 		}
 		if err != nil {
 			s.err = err
 			if raw.Len() > 0 {
-				s.ev = sseEvent{raw: raw.String(), dataLine: dataLine}
+				s.ev = Event{Raw: raw.String(), DataLine: dataLine}
 				return true
 			}
 			return false
@@ -67,18 +75,41 @@ func (s *sseScanner) Scan() bool {
 	}
 }
 
-func (s *sseScanner) Event() sseEvent { return s.ev }
+func (s *Scanner) Event() Event { return s.ev }
+func (s *Scanner) Err() error   { return s.err }
 
-// rewriteSSEPayload mutates the data line of one SSE event by
-// running its content-bearing field through the streaming filter.
-// drop=true tells the caller to suppress the event entirely
-// because the filter buffered the whole token.
-func rewriteSSEPayload(dataLine, provider string, filter *pii.StreamFilter) (string, bool) {
+// IsTerminalMarker reports whether the data line is the per-provider
+// end-of-stream sentinel. The streaming PII filter must drain its
+// residue before the caller forwards a terminal marker — clients
+// stop reading after it.
+func IsTerminalMarker(dataLine string, provider Provider) bool {
+	if dataLine == "" {
+		return false
+	}
+	if strings.TrimSpace(dataLine) == "[DONE]" {
+		return true
+	}
+	if provider == Anthropic {
+		var probe struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal([]byte(dataLine), &probe); err == nil {
+			return probe.Type == "message_stop"
+		}
+	}
+	return false
+}
+
+// RewritePayload runs the data line's content-bearing field through
+// the streaming filter. drop=true tells the caller to suppress the
+// SSE event entirely (the filter buffered the whole token while
+// disambiguating a pattern boundary).
+func RewritePayload(dataLine string, provider Provider, filter *pii.StreamFilter) (rewritten string, drop bool) {
 	if strings.TrimSpace(dataLine) == "[DONE]" {
 		return dataLine, false
 	}
 	switch provider {
-	case "anthropic":
+	case Anthropic:
 		return rewriteAnthropic(dataLine, filter)
 	default:
 		return rewriteOpenAI(dataLine, filter)
@@ -155,30 +186,12 @@ func rewriteAnthropic(dataLine string, filter *pii.StreamFilter) (string, bool) 
 	return string(out), false
 }
 
-func isTerminalSSE(dataLine, provider string) bool {
-	if dataLine == "" {
-		return false
-	}
-	if strings.TrimSpace(dataLine) == "[DONE]" {
-		return true
-	}
-	if provider == "anthropic" {
-		var probe struct {
-			Type string `json:"type"`
-		}
-		if err := json.Unmarshal([]byte(dataLine), &probe); err == nil {
-			return probe.Type == "message_stop"
-		}
-	}
-	return false
-}
-
-// synthSSEResidual builds a provider-shaped SSE event carrying the
-// PII filter's drained tail. Same shape the cloudproxy package
-// uses for its own residual flush.
-func synthSSEResidual(provider, text string) string {
+// SynthResidualEvent builds a provider-shaped SSE event carrying
+// the streaming filter's drained tail so the response body remains
+// a valid event stream after the proxy splices in held-back text.
+func SynthResidualEvent(provider Provider, text string) string {
 	switch provider {
-	case "anthropic":
+	case Anthropic:
 		payload := map[string]any{
 			"type":  "content_block_delta",
 			"index": 0,

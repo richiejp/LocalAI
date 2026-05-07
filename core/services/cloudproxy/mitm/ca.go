@@ -1,24 +1,6 @@
-// Package mitm implements a TLS man-in-the-middle proxy so LocalAI
-// can apply per-request PII redaction to traffic from clients like
-// Claude Code and OpenAI Codex CLI that authenticate via OAuth /
-// subscription rather than via API keys held by LocalAI.
-//
-// The proxy is wire-format-faithful at the network layer: clients
-// configure HTTPS_PROXY=http://localai:port, send a CONNECT, and
-// the proxy either tunnels the bytes (default for unknown hosts) or
-// terminates TLS using a per-host leaf certificate signed by a
-// LocalAI-owned CA, parses the plaintext HTTP request, applies PII
-// redaction on known LLM API endpoints, and re-encrypts to the real
-// upstream. Hosts the proxy doesn't intercept pass through TCP-only
-// — OAuth flows, telemetry, and arbitrary HTTPS keep working
-// without a CA-trust install.
-//
-// CA distribution is the operational tax: clients have to trust the
-// CA cert this package generates. The package exposes the cert as a
-// single-file PEM at LoadOrCreateCA().PublicCertPEM() so the admin
-// can route it through `NODE_EXTRA_CA_CERTS` for Node-based CLIs
-// (Claude Code, Codex), the system trust store, or a Hugo-style
-// docs link served from the LocalAI HTTP API.
+// Package mitm implements a TLS man-in-the-middle proxy that
+// applies per-request PII redaction to allowlisted LLM API hosts
+// while tunnelling everything else byte-for-byte.
 package mitm
 
 import (
@@ -36,44 +18,18 @@ import (
 	"time"
 )
 
-// CA is the LocalAI-owned certificate authority used to sign leaf
-// certs for intercepted hosts. The CA private key never leaves the
-// process — it stays in memory plus the on-disk PEM file with mode
-// 0600. Leaf certs are minted on demand and cached in-memory; they
-// are ephemeral, never written to disk.
-//
-// Lifetime: the CA is generated once on first start and persisted.
-// Restarting LocalAI loads the same CA so clients that already
-// trust it keep working. There's no rotation in the MVP — operators
-// who need to rotate delete the PEM files and reinstall the cert
-// on every client.
 type CA struct {
-	cert    *x509.Certificate
-	certDER []byte
-	key     *ecdsa.PrivateKey
-
-	// publicPEM is the CA cert encoded as PEM, ready to serve from
-	// the admin endpoint or hand to a client via curl. Cached so we
-	// don't re-encode on every download request.
+	cert      *x509.Certificate
+	key       *ecdsa.PrivateKey
 	publicPEM []byte
 
-	// mu guards the leaf-cert cache below. Mints are rare (one per
-	// distinct hostname per process lifetime) and short, so a plain
-	// Mutex is simpler than syncing.Map without giving up much.
 	mu     sync.Mutex
-	leaves map[string]*leafEntry // hostname → cached leaf
+	leaves map[string]*leafEntry
 }
 
 // LoadOrCreateCA loads the CA from dir if both files exist, or
-// generates a new ECDSA-P256 CA and persists it. dir is created with
-// mode 0700 if it does not exist. The private-key file is mode 0600;
-// the public cert is mode 0644 (it's safe to read — that's the whole
-// point of distributing it).
-//
-// This function is safe to call once at startup, on a single process.
-// Concurrent calls from multiple processes against the same dir is
-// not supported (no lock file); operators should not point two
-// LocalAI instances at the same CA dir without external coordination.
+// generates a new ECDSA-P256 CA and persists it. The key file is
+// mode 0600.
 func LoadOrCreateCA(dir string) (*CA, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("mitm: create ca dir %q: %w", dir, err)
@@ -108,9 +64,6 @@ func LoadOrCreateCA(dir string) (*CA, error) {
 	return ca, nil
 }
 
-// generateCA mints a fresh CA. Split out from LoadOrCreateCA so
-// tests can spin up a CA without touching disk (NewInMemoryCA below
-// is the test-only constructor).
 func generateCA() (*CA, []byte, []byte, error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -134,7 +87,7 @@ func generateCA() (*CA, []byte, []byte, error) {
 		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign | x509.KeyUsageDigitalSignature,
 		BasicConstraintsValid: true,
 		IsCA:                  true,
-		MaxPathLenZero:        true, // can only sign leaves, not other CAs
+		MaxPathLenZero:        true,
 	}
 
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
@@ -155,22 +108,18 @@ func generateCA() (*CA, []byte, []byte, error) {
 
 	return &CA{
 		cert:      cert,
-		certDER:   der,
 		key:       key,
 		publicPEM: certPEM,
 		leaves:    make(map[string]*leafEntry),
 	}, certPEM, keyPEM, nil
 }
 
-// NewInMemoryCA mints an ephemeral CA for tests. The cert + key live
-// only in the returned struct; nothing is written to disk.
+// NewInMemoryCA mints an ephemeral CA for tests.
 func NewInMemoryCA() (*CA, error) {
 	ca, _, _, err := generateCA()
 	return ca, err
 }
 
-// parseCA decodes a previously persisted CA from PEM. Used on
-// startup when the CA dir already holds files from a prior run.
 func parseCA(certPEM, keyPEM []byte) (*CA, error) {
 	certBlock, _ := pem.Decode(certPEM)
 	if certBlock == nil || certBlock.Type != "CERTIFICATE" {
@@ -212,27 +161,17 @@ func parseCA(certPEM, keyPEM []byte) (*CA, error) {
 
 	return &CA{
 		cert:      cert,
-		certDER:   certBlock.Bytes,
 		key:       key,
 		publicPEM: certPEM,
 		leaves:    make(map[string]*leafEntry),
 	}, nil
 }
 
-// PublicCertPEM returns the PEM-encoded CA certificate for clients
-// to install in their trust store. Safe to expose unauthenticated —
-// the cert is the public half; an adversary already needs the
-// private key to forge anything with it, and that key never leaves
-// disk.
+// PublicCertPEM returns a copy of the PEM-encoded CA certificate.
 func (c *CA) PublicCertPEM() []byte {
-	// Return a copy so callers can't mutate the cached buffer. The
-	// PEM is small (< 1 KiB) so the alloc cost is irrelevant.
 	out := make([]byte, len(c.publicPEM))
 	copy(out, c.publicPEM)
 	return out
 }
 
-// Cert returns the parsed CA certificate. Used internally by leaf
-// minting; exposed for tests that want to validate the leaf chains
-// up to the CA.
 func (c *CA) Cert() *x509.Certificate { return c.cert }
