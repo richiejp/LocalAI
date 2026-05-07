@@ -21,6 +21,7 @@ import LoadingSpinner from '../components/LoadingSpinner'
 const TABS = [
   { id: 'filtering', label: 'Filtering', icon: 'fa-shield-halved' },
   { id: 'routing', label: 'Routing', icon: 'fa-route' },
+  { id: 'proxy', label: 'MITM Proxy', icon: 'fa-shield' },
   { id: 'events', label: 'Events', icon: 'fa-list-ul' },
 ]
 
@@ -164,6 +165,8 @@ export default function Middleware() {
         />
       ) : activeTab === 'routing' ? (
         <RoutingTab status={status} decisions={decisions} />
+      ) : activeTab === 'proxy' ? (
+        <ProxyTab status={status} addToast={addToast} onChanged={fetchAll} />
       ) : (
         <EventsTab events={events} />
       )}
@@ -411,6 +414,155 @@ function RoutingTab({ status, decisions }) {
         )}
       </div>
     </>
+  )
+}
+
+function ProxyTab({ status, addToast, onChanged }) {
+  const mitm = status?.mitm
+  const [listen, setListen] = useState(mitm?.configured_addr || '')
+  const [hosts, setHosts] = useState((mitm?.intercept_hosts || []).join(', '))
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    setListen(mitm?.configured_addr || '')
+    setHosts((mitm?.intercept_hosts || []).join(', '))
+  }, [mitm?.configured_addr, mitm?.intercept_hosts])
+
+  const dirty = listen !== (mitm?.configured_addr || '') ||
+    hosts !== (mitm?.intercept_hosts || []).join(', ')
+
+  const save = async () => {
+    setSaving(true)
+    try {
+      const parsedHosts = hosts.split(/[,\s]+/).map(h => h.trim()).filter(Boolean)
+      const res = await fetch(apiUrl('/api/settings'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          mitm_listen: listen,
+          mitm_intercept_hosts: parsedHosts,
+        }),
+      })
+      const body = await res.json().catch(() => ({}))
+      if (!res.ok || body.success === false) {
+        throw new Error(body.error || `HTTP ${res.status}`)
+      }
+      addToast('MITM proxy settings updated', 'success')
+      onChanged?.()
+    } catch (err) {
+      addToast(`Failed to save: ${err.message}`, 'error')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  if (!mitm) {
+    return (
+      <div className="empty-state">
+        <div className="empty-state-icon"><i className="fas fa-shield" /></div>
+        <h2 className="empty-state-title">MITM proxy status unavailable</h2>
+        <p className="empty-state-text">The status endpoint did not return a mitm section.</p>
+      </div>
+    )
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--spacing-md)' }}>
+      <div className="card" style={{ padding: 'var(--spacing-lg)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--spacing-md)', marginBottom: 'var(--spacing-md)' }}>
+          <h2 style={{ fontSize: '1rem', fontWeight: 600, margin: 0 }}>State</h2>
+          {enabledBadge(mitm.running)}
+          {mitm.running && (
+            <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.8125rem', color: 'var(--color-text-secondary)' }}>
+              listening on {mitm.listen_addr}
+            </span>
+          )}
+        </div>
+        <p style={{ fontSize: '0.8125rem', color: 'var(--color-text-secondary)', marginBottom: 'var(--spacing-sm)' }}>
+          The MITM proxy terminates TLS for allowlisted hosts so PII redaction
+          can run on traffic from clients that authenticate via OAuth /
+          subscription (Claude Code, Codex CLI). Non-allowlisted hosts get a
+          plain CONNECT tunnel — no inspection, no CA-trust required.
+        </p>
+        {mitm.ca_available ? (
+          <a
+            className="btn btn-secondary btn-sm"
+            href={apiUrl(mitm.ca_cert_url)}
+            download="localai-mitm-ca.crt"
+          >
+            <i className="fas fa-download" /> Download CA cert
+          </a>
+        ) : (
+          <span style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)' }}>
+            CA not generated yet — start the listener to generate it.
+          </span>
+        )}
+      </div>
+
+      <div className="card" style={{ padding: 'var(--spacing-lg)' }}>
+        <h2 style={{ fontSize: '1rem', fontWeight: 600, marginTop: 0, marginBottom: 'var(--spacing-md)' }}>Configuration</h2>
+
+        <label style={{ display: 'block', marginBottom: 'var(--spacing-md)' }}>
+          <div style={{ fontSize: '0.875rem', fontWeight: 500, marginBottom: 'var(--spacing-xs)' }}>Listen address</div>
+          <input
+            type="text"
+            value={listen}
+            onChange={e => setListen(e.target.value)}
+            placeholder=":8443  (leave empty to disable)"
+            style={{ width: '100%', padding: '8px 12px', fontFamily: 'var(--font-mono)', fontSize: '0.875rem', background: 'var(--color-bg-tertiary)', border: '1px solid var(--color-border-default)', borderRadius: 'var(--radius-sm)', color: 'var(--color-text-primary)' }}
+          />
+          <div style={{ marginTop: 'var(--spacing-xs)', fontSize: '0.75rem', color: 'var(--color-text-muted)' }}>
+            Bind address for the proxy listener. Empty disables it. Bind to <code>127.0.0.1:port</code> unless the listener is reachable only from clients you control — there is no auth on the CONNECT port.
+          </div>
+        </label>
+
+        <label style={{ display: 'block', marginBottom: 'var(--spacing-md)' }}>
+          <div style={{ fontSize: '0.875rem', fontWeight: 500, marginBottom: 'var(--spacing-xs)' }}>Intercept hosts</div>
+          <textarea
+            rows={3}
+            value={hosts}
+            onChange={e => setHosts(e.target.value)}
+            placeholder="api.anthropic.com, api.openai.com"
+            style={{ width: '100%', padding: '8px 12px', fontFamily: 'var(--font-mono)', fontSize: '0.875rem', background: 'var(--color-bg-tertiary)', border: '1px solid var(--color-border-default)', borderRadius: 'var(--radius-sm)', color: 'var(--color-text-primary)', resize: 'vertical' }}
+          />
+          <div style={{ marginTop: 'var(--spacing-xs)', fontSize: '0.75rem', color: 'var(--color-text-muted)' }}>
+            Comma- or whitespace-separated hostnames the proxy terminates TLS for. Hosts not listed get a plain CONNECT tunnel.
+          </div>
+        </label>
+
+        <div style={{ display: 'flex', gap: 'var(--spacing-sm)' }}>
+          <button
+            className="btn btn-primary btn-sm"
+            onClick={save}
+            disabled={!dirty || saving}
+          >
+            <i className={`fas ${saving ? 'fa-spinner fa-spin' : 'fa-save'}`} /> {saving ? 'Saving…' : 'Apply'}
+          </button>
+          {dirty && (
+            <button
+              className="btn btn-ghost btn-sm"
+              onClick={() => {
+                setListen(mitm.configured_addr || '')
+                setHosts((mitm.intercept_hosts || []).join(', '))
+              }}
+              disabled={saving}
+            >
+              Discard changes
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div className="card" style={{ padding: 'var(--spacing-md)', background: 'var(--color-bg-secondary)' }}>
+        <h2 style={{ fontSize: '0.875rem', fontWeight: 600, marginTop: 0, marginBottom: 'var(--spacing-sm)' }}>Client setup</h2>
+        <ol style={{ margin: 0, paddingLeft: 20, fontSize: '0.8125rem', color: 'var(--color-text-secondary)', lineHeight: 1.7 }}>
+          <li>Download the CA cert (button above).</li>
+          <li>Trust it on the client. For Node-based CLIs (Claude Code, Codex): <code style={{ fontFamily: 'var(--font-mono)' }}>export NODE_EXTRA_CA_CERTS=$(pwd)/localai-mitm-ca.crt</code></li>
+          <li>Point the client at the proxy: <code style={{ fontFamily: 'var(--font-mono)' }}>export HTTPS_PROXY=http://&lt;host&gt;:&lt;port&gt;</code></li>
+        </ol>
+      </div>
+    </div>
   )
 }
 
