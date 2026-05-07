@@ -53,10 +53,26 @@ const MOCK_DECISIONS = {
 const MOCK_EVENTS = {
   events: [
     {
-      id: 'pii_aaa', correlation_id: 'corr-1', user_id: 'local',
+      id: 'pii_aaa', kind: 'pii', correlation_id: 'corr-1', user_id: 'local',
       direction: 'in', pattern_id: 'email', byte_offset: 12, length: 17,
       hash_prefix: 'ff8d9819', action: 'mask',
       created_at: '2026-05-06T10:00:00Z',
+    },
+    {
+      id: 'proxy_connect_1', kind: 'proxy_connect',
+      host: 'api.openai.com', intercepted: true,
+      created_at: '2026-05-06T10:01:00Z',
+    },
+    {
+      id: 'proxy_connect_2', kind: 'proxy_connect',
+      host: 'github.com', intercepted: false,
+      created_at: '2026-05-06T10:02:00Z',
+    },
+    {
+      id: 'proxy_traffic_1', kind: 'proxy_traffic', correlation_id: 'corr-2',
+      host: 'api.openai.com',
+      bytes_sent: 412, bytes_received: 1280, status_code: 200, duration_ms: 240,
+      created_at: '2026-05-06T10:03:00Z',
     },
   ],
 }
@@ -117,6 +133,75 @@ test.describe('Middleware page — admin in no-auth mode', () => {
     // not in the payload — explicit asserting absence here is the
     // contract the design relies on.
     await expect(page.getByText(/@example\.com/)).toHaveCount(0)
+  })
+
+  test('Events tab renders proxy_connect rows with intercept decision', async ({ page }) => {
+    await page.goto('/app/middleware')
+    await page.getByRole('button', { name: /Events/i }).click()
+
+    // Both intercept and tunnel decisions visible.
+    const interceptRow = page.locator('tr').filter({ hasText: 'api.openai.com' }).first()
+    await expect(interceptRow).toContainText(/intercepted/i)
+    const tunnelRow = page.locator('tr').filter({ hasText: 'github.com' }).first()
+    await expect(tunnelRow).toContainText(/tunneled/i)
+  })
+
+  test('Events tab renders proxy_traffic byte counts and status', async ({ page }) => {
+    await page.goto('/app/middleware')
+    await page.getByRole('button', { name: /Events/i }).click()
+
+    // The traffic row formats as "HTTP 200 · ↑412B ↓1.2KB · 240ms".
+    // We assert on the durable parts: status code, byte values, duration unit.
+    const trafficRow = page.locator('tr').filter({ hasText: 'corr-2' }).first()
+    await expect(trafficRow).toContainText('HTTP 200')
+    await expect(trafficRow).toContainText('412B')
+    await expect(trafficRow).toContainText(/1\.2\s*KB/i)
+    await expect(trafficRow).toContainText('240ms')
+  })
+
+  test('Events kind filter narrows the table to the chosen kind', async ({ page }) => {
+    await page.goto('/app/middleware')
+    await page.getByRole('button', { name: /Events/i }).click()
+
+    // Default = All: pii row + 2 connect rows + 1 traffic row visible.
+    await expect(page.getByText('ff8d9819')).toBeVisible()
+    await expect(page.getByText('github.com')).toBeVisible()
+
+    // Click "PII" filter — proxy rows must disappear.
+    await page.getByRole('button', { name: /^PII$/ }).click()
+    await expect(page.getByText('ff8d9819')).toBeVisible()
+    await expect(page.getByText('github.com')).toHaveCount(0)
+    await expect(page.getByText('HTTP 200')).toHaveCount(0)
+
+    // Click "Proxy traffic" — only the traffic row remains.
+    await page.getByRole('button', { name: /Proxy traffic/i }).click()
+    await expect(page.getByText('HTTP 200')).toBeVisible()
+    await expect(page.getByText('ff8d9819')).toHaveCount(0)
+    await expect(page.getByText('github.com')).toHaveCount(0)
+
+    // Click "Proxy connect" — both connect rows visible, no PII or traffic.
+    await page.getByRole('button', { name: /Proxy connect/i }).click()
+    await expect(page.locator('tr').filter({ hasText: 'github.com' })).toHaveCount(1)
+    await expect(page.locator('tr').filter({ hasText: 'api.openai.com' }).filter({ hasText: 'intercepted' })).toHaveCount(1)
+    await expect(page.getByText('HTTP 200')).toHaveCount(0)
+    await expect(page.getByText('ff8d9819')).toHaveCount(0)
+
+    // Click "All" — everything back.
+    await page.getByRole('button', { name: /^All$/ }).click()
+    await expect(page.getByText('ff8d9819')).toBeVisible()
+    await expect(page.getByText('HTTP 200')).toBeVisible()
+  })
+
+  test('Events tab shows the kind badge for each row', async ({ page }) => {
+    await page.goto('/app/middleware')
+    await page.getByRole('button', { name: /Events/i }).click()
+
+    // The Kind column header is present.
+    await expect(page.locator('th').filter({ hasText: /^Kind$/ })).toBeVisible()
+    // At least one cell renders each of the three kinds.
+    await expect(page.getByText(/^pii$/i)).toBeVisible()
+    await expect(page.getByText(/^proxy connect$/i).first()).toBeVisible()
+    await expect(page.getByText(/^proxy traffic$/i).first()).toBeVisible()
   })
 
   test('PUT /api/pii/patterns/:id fires when an action button is clicked', async ({ page }) => {
