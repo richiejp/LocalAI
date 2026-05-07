@@ -204,6 +204,18 @@ func New(opts ...config.AppOption) (*Application, error) {
 		xlog.Info("pii: disabled by --disable-pii")
 	}
 
+	// Wire the cloudproxy MITM listener. Opt-in: empty MITMListen
+	// means "no MITM" — operators must explicitly choose to start
+	// it because clients have to install the generated CA cert.
+	// The handler reuses the global redactor + event store so an
+	// admin who's already configured PII filtering for direct API
+	// traffic doesn't need a parallel config for MITM traffic.
+	if options.MITMListen != "" {
+		if err := startMITMProxy(application, options); err != nil {
+			return nil, fmt.Errorf("mitm: startup: %w", err)
+		}
+	}
+
 	// Wire the routing decision log. Always-on when stats are enabled —
 	// the per-router admin page reads this as the live activity feed
 	// and as input to drift checks once subsystem 5 (admission) lands.

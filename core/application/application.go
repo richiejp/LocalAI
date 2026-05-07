@@ -17,6 +17,7 @@ import (
 	"github.com/mudler/LocalAI/core/services/monitoring"
 	"github.com/mudler/LocalAI/core/services/nodes"
 	"github.com/mudler/LocalAI/core/services/routing/billing"
+	"github.com/mudler/LocalAI/core/services/cloudproxy/mitm"
 	"github.com/mudler/LocalAI/core/services/routing/pii"
 	"github.com/mudler/LocalAI/core/services/routing/router"
 	"github.com/mudler/LocalAI/core/services/voicerecognition"
@@ -61,6 +62,8 @@ type Application struct {
 	fallbackUser       *auth.User
 	piiRedactor        *pii.Redactor
 	piiEvents          pii.EventStore
+	mitmCA             *mitm.CA
+	mitmServer         *mitm.Server
 	routerDecisions    router.DecisionStore
 	watchdogMutex      sync.Mutex
 	watchdogStop       chan bool
@@ -239,6 +242,16 @@ func (a *Application) PIIRedactor() *pii.Redactor {
 func (a *Application) PIIEvents() pii.EventStore {
 	return a.piiEvents
 }
+
+// MITMCA returns the cloudproxy MITM proxy's CA, or nil when the
+// MITM listener is disabled. Used by the admin endpoint that
+// serves the public CA cert for clients to trust.
+func (a *Application) MITMCA() *mitm.CA { return a.mitmCA }
+
+// MITMServer returns the running MITM proxy or nil. Mostly useful
+// to expose the bound address (when started with port :0) and to
+// stop the listener cleanly on shutdown.
+func (a *Application) MITMServer() *mitm.Server { return a.mitmServer }
 
 // RouterDecisions returns the routing decision store. nil when stats
 // are disabled (--disable-stats); the RouteModel middleware skips the

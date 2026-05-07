@@ -66,6 +66,28 @@ type ApplicationConfig struct {
 	// (false) enables it on the OpenAI chat completions route.
 	DisablePII bool
 
+	// MITMListen is the address (host:port) the cloudproxy MITM
+	// listener binds on. Empty disables the MITM proxy entirely.
+	// Use case: redacting PII from Claude Code / Codex CLI traffic
+	// without LocalAI holding the upstream API key. Clients set
+	// HTTPS_PROXY=http://localai:port and trust the CA cert
+	// LocalAI exposes at /api/middleware/proxy-ca.crt.
+	MITMListen string
+
+	// MITMCADir holds the persisted MITM proxy CA cert and private
+	// key. The CA is generated on first start; subsequent starts
+	// reload it so clients keep trusting the same root. The key
+	// file is mode 0600.
+	MITMCADir string
+
+	// MITMInterceptHosts is the allowlist of hostnames the MITM
+	// proxy terminates TLS for. CONNECTs to other hosts pass
+	// through as TCP tunnels (no inspection, no CA-trust required
+	// from the client). Empty list = tunnel everything = no
+	// inspection — the proxy still observes connection metadata
+	// but applies no PII redaction.
+	MITMInterceptHosts []string
+
 	DisableWebUI                       bool
 	OllamaAPIRootEndpoint              bool
 	EnforcePredownloadScans            bool
@@ -631,6 +653,30 @@ func WithPIIConfigPath(path string) AppOption {
 func WithDisablePII(disable bool) AppOption {
 	return func(o *ApplicationConfig) {
 		o.DisablePII = disable
+	}
+}
+
+// WithMITMListen sets the address the cloudproxy MITM listener
+// binds on. Empty = disabled. CLI: --mitm-listen.
+func WithMITMListen(addr string) AppOption {
+	return func(o *ApplicationConfig) {
+		o.MITMListen = addr
+	}
+}
+
+// WithMITMCADir sets the directory used to persist the MITM proxy
+// CA cert + key. CLI: --mitm-ca-dir.
+func WithMITMCADir(dir string) AppOption {
+	return func(o *ApplicationConfig) {
+		o.MITMCADir = dir
+	}
+}
+
+// WithMITMInterceptHosts sets the allowlist of hosts the MITM
+// proxy terminates TLS for. CLI: --mitm-intercept-host (repeatable).
+func WithMITMInterceptHosts(hosts []string) AppOption {
+	return func(o *ApplicationConfig) {
+		o.MITMInterceptHosts = hosts
 	}
 }
 

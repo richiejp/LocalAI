@@ -51,6 +51,23 @@ func RegisterMiddlewareRoutes(e *echo.Echo, app *application.Application) {
 		return c.JSON(http.StatusOK, buildRouterStatus(app))
 	})
 
+	e.GET("/api/middleware/proxy-ca.crt", func(c echo.Context) error {
+		// The CA cert is the public half — safe to expose without
+		// auth so clients can curl it during initial setup. The
+		// private key never leaves disk and is mode 0600. Returning
+		// 404 (rather than 500) when MITM is disabled keeps the
+		// endpoint a clean "is this feature available?" probe.
+		ca := app.MITMCA()
+		if ca == nil {
+			return c.JSON(http.StatusNotFound, map[string]string{
+				"error": "mitm proxy is not enabled (set --mitm-listen to start it)",
+			})
+		}
+		c.Response().Header().Set("Content-Type", "application/x-pem-file")
+		c.Response().Header().Set("Content-Disposition", `attachment; filename="localai-mitm-ca.crt"`)
+		return c.Blob(http.StatusOK, "application/x-pem-file", ca.PublicCertPEM())
+	})
+
 	e.GET("/api/router/decisions", func(c echo.Context) error {
 		viewer := resolveUsageUser(c, app)
 		if viewer == nil {
