@@ -21,6 +21,15 @@ import (
 	"github.com/mudler/xlog"
 )
 
+// Backend names recognised by the proxy. Any backend starting with
+// "proxy-" goes through Forward; these two are the wire formats the
+// auth + SSE rewriter knows. Unknown proxy-* backends fall back to
+// OpenAI auth.
+const (
+	BackendProxyOpenAI    = "proxy-openai"
+	BackendProxyAnthropic = "proxy-anthropic"
+)
+
 // transport is overridable in tests; production uses http.DefaultTransport.
 var transport http.RoundTripper = http.DefaultTransport
 
@@ -37,7 +46,7 @@ func SetTransport(rt http.RoundTripper) func() {
 // openai-shaped auth since most third-party providers mirror it.
 func providerName(backend string) string {
 	switch backend {
-	case "proxy-anthropic":
+	case BackendProxyAnthropic:
 		return "anthropic"
 	default:
 		return "openai"
@@ -130,7 +139,7 @@ func Forward(c echo.Context, cfg *config.ModelConfig, body []byte, filter *pii.S
 	if err != nil {
 		return echo.NewHTTPError(http.StatusBadGateway, "cloudproxy: upstream request failed: "+err.Error())
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode >= 400 {
 		return passthroughError(c, resp)

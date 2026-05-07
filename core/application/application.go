@@ -64,6 +64,7 @@ type Application struct {
 	piiEvents          pii.EventStore
 	mitmCA             *mitm.CA
 	mitmServer         *mitm.Server
+	mitmMutex          sync.Mutex
 	routerDecisions    router.DecisionStore
 	watchdogMutex      sync.Mutex
 	watchdogStop       chan bool

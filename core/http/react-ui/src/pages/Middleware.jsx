@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useOutletContext } from 'react-router-dom'
 import { apiUrl } from '../utils/basePath'
+import { settingsApi } from '../utils/api'
 import LoadingSpinner from '../components/LoadingSpinner'
 
 // Middleware admin page. Three tabs:
@@ -419,34 +420,36 @@ function RoutingTab({ status, decisions }) {
 
 function ProxyTab({ status, addToast, onChanged }) {
   const mitm = status?.mitm
-  const [listen, setListen] = useState(mitm?.configured_addr || '')
-  const [hosts, setHosts] = useState((mitm?.intercept_hosts || []).join(', '))
+  const serverListen = mitm?.configured_addr || ''
+  const serverHosts = (mitm?.intercept_hosts || []).join(', ')
+
+  const [listen, setListen] = useState(serverListen)
+  const [hosts, setHosts] = useState(serverHosts)
   const [saving, setSaving] = useState(false)
 
-  useEffect(() => {
-    setListen(mitm?.configured_addr || '')
-    setHosts((mitm?.intercept_hosts || []).join(', '))
-  }, [mitm?.configured_addr, mitm?.intercept_hosts])
+  const dirty = listen !== serverListen || hosts !== serverHosts
 
-  const dirty = listen !== (mitm?.configured_addr || '') ||
-    hosts !== (mitm?.intercept_hosts || []).join(', ')
+  // Refresh local state from the server only when (a) the server-side
+  // values actually changed (string compare, not array reference) and
+  // (b) the user has no pending edits to clobber. Without the dirty
+  // gate, a Refresh / post-save refetch wipes mid-typed input.
+  useEffect(() => {
+    if (dirty) return
+    setListen(serverListen)
+    setHosts(serverHosts)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [serverListen, serverHosts])
 
   const save = async () => {
     setSaving(true)
     try {
       const parsedHosts = hosts.split(/[,\s]+/).map(h => h.trim()).filter(Boolean)
-      const res = await fetch(apiUrl('/api/settings'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({
-          mitm_listen: listen,
-          mitm_intercept_hosts: parsedHosts,
-        }),
+      const body = await settingsApi.save({
+        mitm_listen: listen,
+        mitm_intercept_hosts: parsedHosts,
       })
-      const body = await res.json().catch(() => ({}))
-      if (!res.ok || body.success === false) {
-        throw new Error(body.error || `HTTP ${res.status}`)
+      if (body && body.success === false) {
+        throw new Error(body.error || 'unknown error')
       }
       addToast('MITM proxy settings updated', 'success')
       onChanged?.()

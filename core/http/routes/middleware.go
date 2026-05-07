@@ -161,11 +161,6 @@ func buildRouterStatus(app *application.Application) map[string]any {
 	return out
 }
 
-// buildMITMStatus reports the cloudproxy MITM listener state.
-// "running" + "listen_addr" tell the admin page whether the proxy
-// is up and on which port; "intercept_hosts" surfaces the
-// allowlist; "ca_cert_url" gives clients a one-step download path
-// for the CA they need to trust.
 func buildMITMStatus(app *application.Application) map[string]any {
 	srv := app.MITMServer()
 	ca := app.MITMCA()

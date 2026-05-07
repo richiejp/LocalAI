@@ -3,7 +3,6 @@ package application
 import (
 	"fmt"
 	"path/filepath"
-	"sync"
 
 	"github.com/mudler/LocalAI/core/config"
 	"github.com/mudler/LocalAI/core/services/cloudproxy/mitm"
@@ -18,13 +17,9 @@ var defaultInterceptHosts = []string{
 	"api.openai.com",
 }
 
-// mitmMutex serialises start/stop/restart so a runtime settings
-// flip can't race with another flip mid-flight.
-var mitmMutex sync.Mutex
-
 func startMITMProxy(app *Application, options *config.ApplicationConfig) error {
-	mitmMutex.Lock()
-	defer mitmMutex.Unlock()
+	app.mitmMutex.Lock()
+	defer app.mitmMutex.Unlock()
 	return startMITMLocked(app, options)
 }
 
@@ -80,32 +75,30 @@ func startMITMLocked(app *Application, options *config.ApplicationConfig) error 
 
 // StopMITM is idempotent.
 func (a *Application) StopMITM() error {
-	mitmMutex.Lock()
-	defer mitmMutex.Unlock()
-	if a.mitmServer == nil {
-		return nil
-	}
-	a.mitmServer.Stop()
-	a.mitmServer = nil
-	xlog.Info("mitm: cloudproxy listener stopped")
+	a.mitmMutex.Lock()
+	defer a.mitmMutex.Unlock()
+	stopMITMLocked(a)
 	return nil
 }
 
-// RestartMITM stops the running listener (if any) and starts a new
-// one against current ApplicationConfig. Used by /api/settings to
-// pick up MITMListen / MITMInterceptHosts changes without a process
-// restart. The CA is reused across restarts so trusted clients keep
-// working.
+// RestartMITM reuses the existing CA so trusted clients keep
+// working across listener flips.
 func (a *Application) RestartMITM() error {
-	mitmMutex.Lock()
-	defer mitmMutex.Unlock()
-	if a.mitmServer != nil {
-		a.mitmServer.Stop()
-		a.mitmServer = nil
-	}
+	a.mitmMutex.Lock()
+	defer a.mitmMutex.Unlock()
+	stopMITMLocked(a)
 	if a.applicationConfig.MITMListen == "" {
 		xlog.Info("mitm: cloudproxy listener stays disabled (no listen address)")
 		return nil
 	}
 	return startMITMLocked(a, a.applicationConfig)
+}
+
+func stopMITMLocked(a *Application) {
+	if a.mitmServer == nil {
+		return
+	}
+	a.mitmServer.Stop()
+	a.mitmServer = nil
+	xlog.Info("mitm: cloudproxy listener stopped")
 }
