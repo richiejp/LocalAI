@@ -204,18 +204,6 @@ func New(opts ...config.AppOption) (*Application, error) {
 		xlog.Info("pii: disabled by --disable-pii")
 	}
 
-	// Wire the cloudproxy MITM listener. Opt-in: empty MITMListen
-	// means "no MITM" — operators must explicitly choose to start
-	// it because clients have to install the generated CA cert.
-	// The handler reuses the global redactor + event store so an
-	// admin who's already configured PII filtering for direct API
-	// traffic doesn't need a parallel config for MITM traffic.
-	if options.MITMListen != "" {
-		if err := startMITMProxy(application, options); err != nil {
-			return nil, fmt.Errorf("mitm: startup: %w", err)
-		}
-	}
-
 	// Wire the routing decision log. Always-on when stats are enabled —
 	// the per-router admin page reads this as the live activity feed
 	// and as input to drift checks once subsystem 5 (admission) lands.
@@ -384,6 +372,20 @@ func New(opts ...config.AppOption) (*Application, error) {
 	// Note: startupConfigCopy was already created above, so it has the original env var values
 	if options.DynamicConfigsDir != "" {
 		loadRuntimeSettingsFromFile(options)
+	}
+
+	// Wire the cloudproxy MITM listener. Opt-in: empty MITMListen
+	// means "no MITM" — operators must explicitly choose to start
+	// it because clients have to install the generated CA cert.
+	// The handler reuses the global redactor + event store so an
+	// admin who's already configured PII filtering for direct API
+	// traffic doesn't need a parallel config for MITM traffic.
+	// Runs after loadRuntimeSettingsFromFile so a listener configured
+	// via /api/settings is brought back up across restarts.
+	if options.MITMListen != "" {
+		if err := startMITMProxy(application, options); err != nil {
+			return nil, fmt.Errorf("mitm: startup: %w", err)
+		}
 	}
 
 	application.ModelLoader().SetBackendLoggingEnabled(options.EnableBackendLogging)
@@ -666,6 +668,18 @@ func loadRuntimeSettingsFromFile(options *config.ApplicationConfig) {
 	}
 	if settings.FaviconFile != nil {
 		options.Branding.FaviconFile = *settings.FaviconFile
+	}
+
+	// MITM proxy. Like branding, the only source for these is the file —
+	// the CLI flags WithMITMListen / WithMITMInterceptHosts populate
+	// options at startup but if the user configured MITM via /api/settings
+	// after the fact, only the file holds the values. Apply when a CLI
+	// flag did not already set them, so an explicit --mitm-listen still wins.
+	if settings.MITMListen != nil && options.MITMListen == "" {
+		options.MITMListen = *settings.MITMListen
+	}
+	if settings.MITMInterceptHosts != nil && len(options.MITMInterceptHosts) == 0 {
+		options.MITMInterceptHosts = append([]string(nil), *settings.MITMInterceptHosts...)
 	}
 
 	// Backend upgrade flags
