@@ -108,10 +108,6 @@
     "modalityClearedBackend": "Cleared backend selection — it wasn't in the {{label}} group.",
     "copied": "Copied to clipboard"
   },
-  "templates": {
-    "label": "Templates:",
-    "applied": "Loaded {{label}} template"
-  },
   "uriFormats": {
     "huggingface": {
       "title": "HuggingFace",
