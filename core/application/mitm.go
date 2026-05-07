@@ -56,6 +56,7 @@ func startMITMLocked(app *Application, options *config.ApplicationConfig) error 
 		CA:             app.mitmCA,
 		InterceptHosts: hosts,
 		Handler:        handler,
+		EventStore:     app.piiEvents,
 	})
 	if err != nil {
 		return fmt.Errorf("server: %w", err)

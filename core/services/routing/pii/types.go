@@ -103,18 +103,56 @@ type Pattern struct {
 	regex regexpMatcher
 }
 
+// EventKind classifies a stored audit event. The store is shared by the
+// PII filter (its original use), the MITM proxy (connect decisions and
+// per-request traffic counters), and — when subsystem 2 lands — the
+// content router. Filtering by Kind keeps unrelated event types out of
+// each other's UI tabs without splitting storage.
+//
+// An empty Kind is treated as KindPII so rows written before this field
+// existed still classify correctly.
+type EventKind string
+
+const (
+	KindPII          EventKind = "pii"
+	KindProxyConnect EventKind = "proxy_connect"
+	KindProxyTraffic EventKind = "proxy_traffic"
+)
+
 // PIIEvent is the persisted record. The Hash field is the first 8 chars
 // of sha256(matched value) — enough to deduplicate "is this the same
 // thing as last time" without ever storing the value itself.
+//
+// Proxy-event fields (Host, Intercepted, Bytes*, StatusCode, DurationMS)
+// are only set when Kind is KindProxyConnect or KindProxyTraffic. They
+// hold connection-level metadata for audit and basic diagnostics — never
+// request bodies. Use the API/backend traces to inspect contents.
 type PIIEvent struct {
 	ID            string    `json:"id"`
-	CorrelationID string    `json:"correlation_id"`
-	UserID        string    `json:"user_id"`
-	Direction     Direction `json:"direction"`
-	PatternID     string    `json:"pattern_id"`
-	ByteOffset    int       `json:"byte_offset"`
-	Length        int       `json:"length"`
-	HashPrefix    string    `json:"hash_prefix"`
-	Action        Action    `json:"action"`
+	Kind          EventKind `json:"kind,omitempty"`
+	CorrelationID string    `json:"correlation_id,omitempty"`
+	UserID        string    `json:"user_id,omitempty"`
+	Direction     Direction `json:"direction,omitempty"`
+	PatternID     string    `json:"pattern_id,omitempty"`
+	ByteOffset    int       `json:"byte_offset,omitempty"`
+	Length        int       `json:"length,omitempty"`
+	HashPrefix    string    `json:"hash_prefix,omitempty"`
+	Action        Action    `json:"action,omitempty"`
 	CreatedAt     time.Time `json:"created_at"`
+
+	Host          string `json:"host,omitempty"`
+	Intercepted   *bool  `json:"intercepted,omitempty"`
+	BytesSent     int64  `json:"bytes_sent,omitempty"`
+	BytesReceived int64  `json:"bytes_received,omitempty"`
+	StatusCode    int    `json:"status_code,omitempty"`
+	DurationMS    int64  `json:"duration_ms,omitempty"`
+}
+
+// ResolvedKind returns the event's Kind, treating an empty value as
+// KindPII for rows written before Kind existed.
+func (e PIIEvent) ResolvedKind() EventKind {
+	if e.Kind == "" {
+		return KindPII
+	}
+	return e.Kind
 }

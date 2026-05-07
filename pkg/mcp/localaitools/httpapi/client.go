@@ -604,6 +604,10 @@ func (c *Client) GetPIIEvents(ctx context.Context, q localaitools.PIIEventsQuery
 	if q.PatternID != "" {
 		qs.Set("pattern_id", q.PatternID)
 	}
+	// The MCP get_pii_events tool is PII-shaped; the events store is now
+	// shared with proxy events that have no pattern_id/action. Scope to
+	// kind=pii so the LLM-facing audit stays coherent.
+	qs.Set("kind", "pii")
 	if q.Limit > 0 {
 		qs.Set("limit", fmt.Sprintf("%d", q.Limit))
 	}

@@ -54,13 +54,14 @@ func RegisterPIIRoutes(e *echo.Echo, app *application.Application) {
 	})
 
 	// GetPIIEventsEndpoint godoc
-	// @Summary List recent PII redaction events
-	// @Description Filters by correlation_id, user_id, pattern_id; default limit 100. Admin-only when auth is on; available to the local user in single-user mode.
+	// @Summary List recent middleware events
+	// @Description The event log is shared between the PII filter and the MITM proxy: PII redactions, proxy_connect (intercept decisions), and proxy_traffic (per-request byte counts) all flow through the same store. Filter by kind to narrow the view. Admin-only when auth is on; available to the local user in single-user mode.
 	// @Tags pii
 	// @Produce json
 	// @Param correlation_id query string false "Correlation ID join key"
 	// @Param user_id query string false "User id"
 	// @Param pattern_id query string false "Pattern id (e.g. email, ssn)"
+	// @Param kind query string false "Event kind: pii | proxy_connect | proxy_traffic"
 	// @Param limit query int false "Max events" default(100)
 	// @Success 200 {object} map[string]interface{}
 	// @Router /api/pii/events [get]
@@ -84,6 +85,7 @@ func RegisterPIIRoutes(e *echo.Echo, app *application.Application) {
 			CorrelationID: c.QueryParam("correlation_id"),
 			UserID:        c.QueryParam("user_id"),
 			PatternID:     c.QueryParam("pattern_id"),
+			Kind:          pii.EventKind(c.QueryParam("kind")),
 			Limit:         limit,
 		})
 		if err != nil {

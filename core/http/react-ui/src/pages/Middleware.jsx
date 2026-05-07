@@ -569,57 +569,148 @@ function ProxyTab({ status, addToast, onChanged }) {
   )
 }
 
-function EventsTab({ events }) {
-  if (!events || events.length === 0) {
-    return (
-      <div className="empty-state">
-        <div className="empty-state-icon"><i className="fas fa-list-ul" /></div>
-        <h2 className="empty-state-title">No PII events</h2>
-        <p className="empty-state-text">
-          Events appear here when the redactor matches a pattern. The matched value is never stored —
-          only an 8-char sha256 prefix admins can use to dedupe recurring leaks.
-        </p>
-      </div>
-    )
+const EVENT_KINDS = [
+  { id: '', label: 'All' },
+  { id: 'pii', label: 'PII' },
+  { id: 'proxy_connect', label: 'Proxy connect' },
+  { id: 'proxy_traffic', label: 'Proxy traffic' },
+]
+
+function eventKind(e) {
+  return e.kind || 'pii'
+}
+
+function eventSubject(e) {
+  switch (eventKind(e)) {
+    case 'proxy_connect':
+    case 'proxy_traffic':
+      return e.host || '—'
+    default:
+      return e.pattern_id || '—'
+  }
+}
+
+function eventDetails(e) {
+  switch (eventKind(e)) {
+    case 'proxy_connect':
+      return e.intercepted ? 'intercepted (TLS terminated)' : 'tunneled (passthrough)'
+    case 'proxy_traffic': {
+      const status = e.status_code ? `HTTP ${e.status_code}` : 'no upstream'
+      const sent = formatBytes(e.bytes_sent)
+      const recv = formatBytes(e.bytes_received)
+      const dur = e.duration_ms != null ? `${e.duration_ms}ms` : ''
+      return `${status} · ↑${sent} ↓${recv} · ${dur}`
+    }
+    default: {
+      const len = e.length != null ? `len ${e.length}` : ''
+      const hash = e.hash_prefix ? `hash ${e.hash_prefix}` : ''
+      return [len, hash].filter(Boolean).join(' · ') || '—'
+    }
+  }
+}
+
+function formatBytes(n) {
+  if (!n) return '0B'
+  if (n < 1024) return `${n}B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)}KB`
+  return `${(n / (1024 * 1024)).toFixed(1)}MB`
+}
+
+function kindBadge(kind) {
+  const colors = {
+    pii: 'var(--color-warning)',
+    proxy_connect: 'var(--color-primary)',
+    proxy_traffic: 'var(--color-text-muted)',
   }
   return (
+    <span style={{
+      display: 'inline-block',
+      padding: '2px 8px',
+      fontSize: '0.6875rem',
+      fontWeight: 600,
+      borderRadius: 'var(--radius-sm)',
+      background: colors[kind] || 'var(--color-bg-tertiary)',
+      color: 'white',
+      fontFamily: 'var(--font-mono)',
+      textTransform: 'uppercase',
+      whiteSpace: 'nowrap',
+    }}>
+      {kind.replace(/_/g, ' ')}
+    </span>
+  )
+}
+
+function EventsTab({ events }) {
+  const [kindFilter, setKindFilter] = useState('')
+  const filtered = kindFilter ? events.filter(e => eventKind(e) === kindFilter) : events
+
+  return (
     <div className="card" style={{ padding: 'var(--spacing-md)' }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 'var(--spacing-sm)' }}>
-        <span style={{ fontSize: '0.875rem', fontWeight: 600 }}>Recent events</span>
-        <span style={{ fontSize: '0.6875rem', color: 'var(--color-text-muted)' }}>
-          Newest first, capped at 100.
-        </span>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 'var(--spacing-sm)', gap: 'var(--spacing-sm)', flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--spacing-xs)' }}>
+          <span style={{ fontSize: '0.875rem', fontWeight: 600 }}>Recent events</span>
+          <span style={{ fontSize: '0.6875rem', color: 'var(--color-text-muted)' }}>
+            shared by PII filter and MITM proxy · newest first · capped at 100
+          </span>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--spacing-xs)' }}>
+          {EVENT_KINDS.map(k => (
+            <button
+              key={k.id || 'all'}
+              className={`btn btn-sm ${kindFilter === k.id ? 'btn-primary' : 'btn-secondary'}`}
+              onClick={() => setKindFilter(k.id)}
+            >
+              {k.label}
+            </button>
+          ))}
+        </div>
       </div>
-      <div className="table-container">
-        <table className="table">
-          <thead>
-            <tr>
-              <th style={{ width: 170 }}>Time</th>
-              <th style={{ width: 110 }}>Pattern</th>
-              <th style={{ width: 110 }}>Action</th>
-              <th style={{ width: 80 }}>Length</th>
-              <th style={{ width: 110 }}>Hash prefix</th>
-              <th>Correlation</th>
-            </tr>
-          </thead>
-          <tbody>
-            {events.map(e => (
-              <tr key={e.id}>
-                <td style={{ fontFamily: 'var(--font-mono)', fontSize: '0.75rem', color: 'var(--color-text-muted)' }}>
-                  {e.created_at}
-                </td>
-                <td style={{ fontFamily: 'var(--font-mono)', fontSize: '0.8125rem', fontWeight: 600 }}>{e.pattern_id}</td>
-                <td>{actionBadge(e.action)}</td>
-                <td style={{ fontFamily: 'var(--font-mono)', fontSize: '0.75rem' }}>{e.length}</td>
-                <td style={{ fontFamily: 'var(--font-mono)', fontSize: '0.75rem' }}>{e.hash_prefix}</td>
-                <td style={{ fontFamily: 'var(--font-mono)', fontSize: '0.6875rem', color: 'var(--color-text-muted)' }}>
-                  {e.correlation_id || '—'}
-                </td>
+      {filtered.length === 0 ? (
+        <div className="empty-state">
+          <div className="empty-state-icon"><i className="fas fa-list-ul" /></div>
+          <h2 className="empty-state-title">No events</h2>
+          <p className="empty-state-text">
+            Events appear here when the PII filter matches a pattern, when the MITM proxy decides whether
+            to intercept a hostname, or when an intercepted request finishes. Request bodies are never
+            stored — use the API and backend traces for that.
+          </p>
+        </div>
+      ) : (
+        <div className="table-container">
+          <table className="table">
+            <thead>
+              <tr>
+                <th style={{ width: 170 }}>Time</th>
+                <th style={{ width: 130 }}>Kind</th>
+                <th style={{ width: 200 }}>Subject</th>
+                <th>Details</th>
+                <th style={{ width: 110 }}>Action</th>
+                <th>Correlation</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+            </thead>
+            <tbody>
+              {filtered.map(e => (
+                <tr key={e.id}>
+                  <td style={{ fontFamily: 'var(--font-mono)', fontSize: '0.75rem', color: 'var(--color-text-muted)' }}>
+                    {e.created_at}
+                  </td>
+                  <td>{kindBadge(eventKind(e))}</td>
+                  <td style={{ fontFamily: 'var(--font-mono)', fontSize: '0.8125rem', fontWeight: 600 }}>
+                    {eventSubject(e)}
+                  </td>
+                  <td style={{ fontFamily: 'var(--font-mono)', fontSize: '0.75rem', color: 'var(--color-text-muted)' }}>
+                    {eventDetails(e)}
+                  </td>
+                  <td>{e.action ? actionBadge(e.action) : '—'}</td>
+                  <td style={{ fontFamily: 'var(--font-mono)', fontSize: '0.6875rem', color: 'var(--color-text-muted)' }}>
+                    {e.correlation_id || '—'}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   )
 }

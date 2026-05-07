@@ -19,13 +19,14 @@ type EventStore interface {
 	Close() error
 }
 
-// ListQuery filters the event log. CorrelationID, UserID, PatternID
-// each scope the search; empty values match anything. Limit ≤ 0
+// ListQuery filters the event log. CorrelationID, UserID, PatternID,
+// Kind each scope the search; empty values match anything. Limit ≤ 0
 // returns up to a default cap.
 type ListQuery struct {
 	CorrelationID string
 	UserID        string
 	PatternID     string
+	Kind          EventKind
 	Limit         int
 }
 
@@ -85,6 +86,9 @@ func (s *memoryEventStore) List(_ context.Context, q ListQuery) ([]PIIEvent, err
 			return false
 		}
 		if q.PatternID != "" && e.PatternID != q.PatternID {
+			return false
+		}
+		if q.Kind != "" && e.ResolvedKind() != q.Kind {
 			return false
 		}
 		out = append(out, e)

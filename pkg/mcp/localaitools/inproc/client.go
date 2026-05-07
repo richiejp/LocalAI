@@ -643,6 +643,7 @@ func (c *Client) GetPIIEvents(ctx context.Context, q localaitools.PIIEventsQuery
 		CorrelationID: q.CorrelationID,
 		UserID:        q.UserID,
 		PatternID:     q.PatternID,
+		Kind:          pii.KindPII,
 		Limit:         q.Limit,
 	})
 	if err != nil {

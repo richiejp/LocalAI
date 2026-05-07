@@ -2,6 +2,7 @@ package mitm
 
 import (
 	"bufio"
+	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -10,8 +11,10 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/mudler/LocalAI/core/services/routing/pii"
 	"github.com/mudler/xlog"
 	"golang.org/x/net/http2"
 )
@@ -27,6 +30,8 @@ type Server struct {
 	connectTimeout  time.Duration
 	dialTimeout     time.Duration
 	upstreamTLS     *tls.Config
+	events          pii.EventStore
+	eventSeq        atomic.Uint64
 
 	listener net.Listener
 	srv      *http.Server
@@ -46,6 +51,10 @@ type Config struct {
 	CA             *CA
 	InterceptHosts []string
 	Handler        InterceptHandler
+	// EventStore optionally receives a proxy_connect event for every
+	// CONNECT, recording the destination host and whether the proxy
+	// intercepted or tunneled it. nil disables connect-event recording.
+	EventStore pii.EventStore
 }
 
 func NewServer(cfg Config) (*Server, error) {
@@ -67,6 +76,7 @@ func NewServer(cfg Config) (*Server, error) {
 		connectTimeout: 30 * time.Second,
 		dialTimeout:    15 * time.Second,
 		upstreamTLS:    &tls.Config{NextProtos: []string{"http/1.1"}},
+		events:         cfg.EventStore,
 		stopped:        make(chan struct{}),
 	}, nil
 }
@@ -126,11 +136,33 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	host = strings.ToLower(host)
 
-	if !s.shouldIntercept(host) {
+	intercept := s.shouldIntercept(host)
+	s.recordConnectEvent(host, intercept)
+	if !intercept {
 		s.handleTunnel(w, r)
 		return
 	}
 	s.handleIntercept(w, r, host)
+}
+
+// recordConnectEvent writes a proxy_connect audit row. Best-effort —
+// store errors are logged at debug only so a failing recorder cannot
+// break a CONNECT.
+func (s *Server) recordConnectEvent(host string, intercepted bool) {
+	if s.events == nil {
+		return
+	}
+	flag := intercepted
+	ev := pii.PIIEvent{
+		ID:          fmt.Sprintf("proxy_connect_%d", s.eventSeq.Add(1)),
+		Kind:        pii.KindProxyConnect,
+		Host:        host,
+		Intercepted: &flag,
+		CreatedAt:   time.Now(),
+	}
+	if err := s.events.Record(context.Background(), ev); err != nil {
+		xlog.Debug("mitm: failed to record proxy_connect event", "error", err, "host", host)
+	}
 }
 
 // shouldIntercept reports whether host is in the allowlist. An

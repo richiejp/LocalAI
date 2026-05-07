@@ -63,6 +63,7 @@ func startPIITestRig(t *testing.T, upstream http.Handler) (*http.Client, string,
 		CA:             ca,
 		InterceptHosts: []string{"api.anthropic.com"},
 		Handler:        prodHandler,
+		EventStore:     store,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -249,6 +250,61 @@ func TestRedactRequest_AnthropicShape(t *testing.T) {
 	content, _ := first["content"].(string)
 	if strings.Contains(content, "bob@example.org") {
 		t.Errorf("redaction did not run: %q", content)
+	}
+}
+
+func TestProxy_EmitsConnectAndTrafficEvents(t *testing.T) {
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"id":"msg_x","content":[{"type":"text","text":"ok"}]}`)
+	})
+
+	client, base, store, cleanup := startPIITestRig(t, upstream)
+	defer cleanup()
+
+	body := `{"model":"claude-3-5-sonnet","max_tokens":10,"messages":[{"role":"user","content":"hi"}]}`
+	resp, err := client.Post(base+"/v1/messages", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("client.Post: %v", err)
+	}
+	defer resp.Body.Close()
+	io.Copy(io.Discard, resp.Body)
+
+	var connect, traffic *pii.PIIEvent
+	for i := range store.events {
+		ev := &store.events[i]
+		switch ev.ResolvedKind() {
+		case pii.KindProxyConnect:
+			connect = ev
+		case pii.KindProxyTraffic:
+			traffic = ev
+		}
+	}
+
+	if connect == nil {
+		t.Fatal("no proxy_connect event recorded")
+	}
+	if connect.Host != "api.anthropic.com" {
+		t.Errorf("connect.Host = %q, want api.anthropic.com", connect.Host)
+	}
+	if connect.Intercepted == nil || !*connect.Intercepted {
+		t.Error("connect.Intercepted should be true for an allowlisted host")
+	}
+
+	if traffic == nil {
+		t.Fatal("no proxy_traffic event recorded")
+	}
+	if traffic.Host != "api.anthropic.com" {
+		t.Errorf("traffic.Host = %q, want api.anthropic.com", traffic.Host)
+	}
+	if traffic.BytesSent <= 0 {
+		t.Errorf("traffic.BytesSent = %d, want > 0", traffic.BytesSent)
+	}
+	if traffic.BytesReceived <= 0 {
+		t.Errorf("traffic.BytesReceived = %d, want > 0", traffic.BytesReceived)
+	}
+	if traffic.StatusCode != 200 {
+		t.Errorf("traffic.StatusCode = %d, want 200", traffic.StatusCode)
 	}
 }
 

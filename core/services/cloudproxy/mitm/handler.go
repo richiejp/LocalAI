@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/mudler/LocalAI/core/schema"
 	"github.com/mudler/LocalAI/core/services/cloudproxy/ssewire"
@@ -95,6 +96,18 @@ type piiDispatcher struct {
 }
 
 func (d *piiDispatcher) serve(w http.ResponseWriter, r *http.Request, host string) {
+	start := time.Now()
+	cw := &countingResponseWriter{ResponseWriter: w}
+	w = cw
+
+	var (
+		correlationID string
+		bytesSent     int64
+	)
+	defer func() {
+		d.recordTrafficEvent(host, correlationID, bytesSent, cw.bytes, cw.status, start)
+	}()
+
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		http.Error(w, "mitm: read body: "+err.Error(), http.StatusBadGateway)
@@ -102,7 +115,7 @@ func (d *piiDispatcher) serve(w http.ResponseWriter, r *http.Request, host strin
 	}
 	_ = r.Body.Close()
 
-	correlationID := r.Header.Get(d.corrHeader)
+	correlationID = r.Header.Get(d.corrHeader)
 	if correlationID == "" {
 		correlationID = r.Header.Get("x-request-id")
 	}
@@ -130,6 +143,7 @@ func (d *piiDispatcher) serve(w http.ResponseWriter, r *http.Request, host strin
 	upstreamReq.Header = cloneHopByHopFiltered(r.Header)
 	upstreamReq.ContentLength = int64(len(body))
 	upstreamReq.Header.Set("Content-Length", fmt.Sprintf("%d", len(body)))
+	bytesSent = int64(len(body))
 
 	resp, err := d.client.Do(upstreamReq)
 	if err != nil {
@@ -257,6 +271,7 @@ func (d *piiDispatcher) recordEvents(spans []pii.Span, correlationID string) {
 	for _, span := range spans {
 		ev := pii.PIIEvent{
 			ID:            fmt.Sprintf("mitm_%s_%d", correlationID, d.eventSeq.Add(1)),
+			Kind:          pii.KindPII,
 			CorrelationID: correlationID,
 			Direction:     pii.DirectionIn,
 			PatternID:     span.Pattern,
@@ -264,6 +279,7 @@ func (d *piiDispatcher) recordEvents(spans []pii.Span, correlationID string) {
 			Length:        span.End - span.Start,
 			HashPrefix:    span.HashPrefix,
 			Action:        d.patternAction[span.Pattern],
+			CreatedAt:     time.Now(),
 		}
 		if err := d.store.Record(context.Background(), ev); err != nil {
 			xlog.Debug("mitm: failed to record pii event", "error", err, "pattern", span.Pattern)
@@ -346,6 +362,56 @@ var hopByHopHeaders = map[string]struct{}{
 func isHopByHop(name string) bool {
 	_, ok := hopByHopHeaders[http.CanonicalHeaderKey(name)]
 	return ok
+}
+
+// countingResponseWriter wraps an http.ResponseWriter to track the
+// total bytes written downstream and the status code. It implements
+// http.Flusher because the SSE paths flush per event; without that
+// the assertion `w.(http.Flusher)` would silently degrade to no-op.
+type countingResponseWriter struct {
+	http.ResponseWriter
+	bytes  int64
+	status int
+}
+
+func (w *countingResponseWriter) Write(p []byte) (int, error) {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	n, err := w.ResponseWriter.Write(p)
+	w.bytes += int64(n)
+	return n, err
+}
+
+func (w *countingResponseWriter) WriteHeader(code int) {
+	w.status = code
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *countingResponseWriter) Flush() {
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func (d *piiDispatcher) recordTrafficEvent(host, correlationID string, sent, received int64, status int, start time.Time) {
+	if d.store == nil {
+		return
+	}
+	ev := pii.PIIEvent{
+		ID:            fmt.Sprintf("proxy_traffic_%s_%d", correlationID, d.eventSeq.Add(1)),
+		Kind:          pii.KindProxyTraffic,
+		CorrelationID: correlationID,
+		Host:          host,
+		BytesSent:     sent,
+		BytesReceived: received,
+		StatusCode:    status,
+		DurationMS:    time.Since(start).Milliseconds(),
+		CreatedAt:     time.Now(),
+	}
+	if err := d.store.Record(context.Background(), ev); err != nil {
+		xlog.Debug("mitm: failed to record proxy_traffic event", "error", err, "host", host)
+	}
 }
 
 func cloneHopByHopFiltered(in http.Header) http.Header {
