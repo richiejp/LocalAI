@@ -1073,6 +1073,9 @@ func (o *ApplicationConfig) ToRuntimeSettings() RuntimeSettings {
 	logoHorizontalFile := o.Branding.LogoHorizontalFile
 	faviconFile := o.Branding.FaviconFile
 
+	mitmListen := o.MITMListen
+	mitmInterceptHosts := append([]string(nil), o.MITMInterceptHosts...)
+
 	return RuntimeSettings{
 		WatchdogEnabled:           &watchdogEnabled,
 		WatchdogIdleEnabled:       &watchdogIdle,
@@ -1125,6 +1128,8 @@ func (o *ApplicationConfig) ToRuntimeSettings() RuntimeSettings {
 		LogoFile:                  &logoFile,
 		LogoHorizontalFile:        &logoHorizontalFile,
 		FaviconFile:               &faviconFile,
+		MITMListen:                &mitmListen,
+		MITMInterceptHosts:        &mitmInterceptHosts,
 	}
 }
 
@@ -1345,6 +1350,13 @@ func (o *ApplicationConfig) ApplyRuntimeSettings(settings *RuntimeSettings) (req
 	}
 	if settings.FaviconFile != nil {
 		o.Branding.FaviconFile = *settings.FaviconFile
+	}
+
+	if settings.MITMListen != nil {
+		o.MITMListen = *settings.MITMListen
+	}
+	if settings.MITMInterceptHosts != nil {
+		o.MITMInterceptHosts = append([]string(nil), *settings.MITMInterceptHosts...)
 	}
 
 	// Note: ApiKeys requires special handling (merging with startup keys) - handled in caller

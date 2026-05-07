@@ -38,10 +38,12 @@ func RegisterMiddlewareRoutes(e *echo.Echo, app *application.Application) {
 
 		piiSection := buildPIIStatus(app)
 		routerSection := buildRouterStatus(app)
+		mitmSection := buildMITMStatus(app)
 
 		return c.JSON(http.StatusOK, map[string]any{
 			"pii":    piiSection,
 			"router": routerSection,
+			"mitm":   mitmSection,
 		})
 	})
 
@@ -155,6 +157,33 @@ func buildRouterStatus(app *application.Application) map[string]any {
 	}
 	if !hasAny {
 		out["note"] = "No router models configured. Add a `router:` block to a model YAML to enable intelligent routing."
+	}
+	return out
+}
+
+// buildMITMStatus reports the cloudproxy MITM listener state.
+// "running" + "listen_addr" tell the admin page whether the proxy
+// is up and on which port; "intercept_hosts" surfaces the
+// allowlist; "ca_cert_url" gives clients a one-step download path
+// for the CA they need to trust.
+func buildMITMStatus(app *application.Application) map[string]any {
+	srv := app.MITMServer()
+	ca := app.MITMCA()
+	cfg := app.ApplicationConfig()
+
+	out := map[string]any{
+		"running":         srv != nil,
+		"listen_addr":     "",
+		"configured_addr": cfg.MITMListen,
+		"intercept_hosts": cfg.MITMInterceptHosts,
+		"ca_available":    ca != nil,
+		"ca_cert_url":     "",
+	}
+	if srv != nil {
+		out["listen_addr"] = srv.Addr()
+	}
+	if ca != nil {
+		out["ca_cert_url"] = "/api/middleware/proxy-ca.crt"
 	}
 	return out
 }

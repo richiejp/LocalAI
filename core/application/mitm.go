@@ -3,6 +3,7 @@ package application
 import (
 	"fmt"
 	"path/filepath"
+	"sync"
 
 	"github.com/mudler/LocalAI/core/config"
 	"github.com/mudler/LocalAI/core/services/cloudproxy/mitm"
@@ -10,22 +11,24 @@ import (
 )
 
 // defaultInterceptHosts is the allowlist used when the operator
-// doesn't pass --mitm-intercept-host. Covers the two LLM provider
-// endpoints LocalAI knows the wire format for; everything else
-// tunnels (CONNECT pass-through) so the MITM proxy doesn't break
-// arbitrary HTTPS traffic that happens to share the listener.
+// doesn't supply one. Covers the LLM provider endpoints whose wire
+// formats the redactor knows; everything else tunnels.
 var defaultInterceptHosts = []string{
 	"api.anthropic.com",
 	"api.openai.com",
 }
 
-// startMITMProxy spins up the cloudproxy MITM listener using
-// settings from ApplicationConfig. Called from start() when
-// MITMListen is non-empty. The CA dir defaults to <data
-// path>/mitm-ca if the operator didn't set --mitm-ca-dir, so
-// out-of-box the persisted CA lives next to the rest of LocalAI's
-// per-installation state.
+// mitmMutex serialises start/stop/restart so a runtime settings
+// flip can't race with another flip mid-flight.
+var mitmMutex sync.Mutex
+
 func startMITMProxy(app *Application, options *config.ApplicationConfig) error {
+	mitmMutex.Lock()
+	defer mitmMutex.Unlock()
+	return startMITMLocked(app, options)
+}
+
+func startMITMLocked(app *Application, options *config.ApplicationConfig) error {
 	caDir := options.MITMCADir
 	if caDir == "" {
 		base := options.DataPath
@@ -35,11 +38,13 @@ func startMITMProxy(app *Application, options *config.ApplicationConfig) error {
 		caDir = filepath.Join(base, "mitm-ca")
 	}
 
-	ca, err := mitm.LoadOrCreateCA(caDir)
-	if err != nil {
-		return fmt.Errorf("ca: %w", err)
+	if app.mitmCA == nil {
+		ca, err := mitm.LoadOrCreateCA(caDir)
+		if err != nil {
+			return fmt.Errorf("ca: %w", err)
+		}
+		app.mitmCA = ca
 	}
-	app.mitmCA = ca
 
 	hosts := options.MITMInterceptHosts
 	if len(hosts) == 0 {
@@ -53,7 +58,7 @@ func startMITMProxy(app *Application, options *config.ApplicationConfig) error {
 
 	srv, err := mitm.NewServer(mitm.Config{
 		Addr:           options.MITMListen,
-		CA:             ca,
+		CA:             app.mitmCA,
 		InterceptHosts: hosts,
 		Handler:        handler,
 	})
@@ -71,4 +76,36 @@ func startMITMProxy(app *Application, options *config.ApplicationConfig) error {
 		"intercept_hosts", hosts,
 	)
 	return nil
+}
+
+// StopMITM is idempotent.
+func (a *Application) StopMITM() error {
+	mitmMutex.Lock()
+	defer mitmMutex.Unlock()
+	if a.mitmServer == nil {
+		return nil
+	}
+	a.mitmServer.Stop()
+	a.mitmServer = nil
+	xlog.Info("mitm: cloudproxy listener stopped")
+	return nil
+}
+
+// RestartMITM stops the running listener (if any) and starts a new
+// one against current ApplicationConfig. Used by /api/settings to
+// pick up MITMListen / MITMInterceptHosts changes without a process
+// restart. The CA is reused across restarts so trusted clients keep
+// working.
+func (a *Application) RestartMITM() error {
+	mitmMutex.Lock()
+	defer mitmMutex.Unlock()
+	if a.mitmServer != nil {
+		a.mitmServer.Stop()
+		a.mitmServer = nil
+	}
+	if a.applicationConfig.MITMListen == "" {
+		xlog.Info("mitm: cloudproxy listener stays disabled (no listen address)")
+		return nil
+	}
+	return startMITMLocked(a, a.applicationConfig)
 }
