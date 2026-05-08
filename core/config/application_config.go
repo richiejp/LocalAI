@@ -80,13 +80,12 @@ type ApplicationConfig struct {
 	// file is mode 0600.
 	MITMCADir string
 
-	// MITMInterceptHosts is the allowlist of hostnames the MITM
-	// proxy terminates TLS for. CONNECTs to other hosts pass
-	// through as TCP tunnels (no inspection, no CA-trust required
-	// from the client). Empty list = tunnel everything = no
-	// inspection — the proxy still observes connection metadata
-	// but applies no PII redaction.
-	MITMInterceptHosts []string
+
+	// PIIPatternOverrides applies persisted per-id deltas (action,
+	// disabled) to the live redactor at startup. Loaded from
+	// runtime_settings.json and applied right after pii.NewRedactor.
+	// nil/empty leaves the YAML defaults in place.
+	PIIPatternOverrides map[string]PIIPatternRuntimeOverride
 
 	DisableWebUI                       bool
 	OllamaAPIRootEndpoint              bool
@@ -672,13 +671,6 @@ func WithMITMCADir(dir string) AppOption {
 	}
 }
 
-// WithMITMInterceptHosts sets the allowlist of hosts the MITM
-// proxy terminates TLS for. CLI: --mitm-intercept-host (repeatable).
-func WithMITMInterceptHosts(hosts []string) AppOption {
-	return func(o *ApplicationConfig) {
-		o.MITMInterceptHosts = hosts
-	}
-}
 
 func WithDynamicConfigDir(dynamicConfigsDir string) AppOption {
 	return func(o *ApplicationConfig) {
@@ -1074,7 +1066,6 @@ func (o *ApplicationConfig) ToRuntimeSettings() RuntimeSettings {
 	faviconFile := o.Branding.FaviconFile
 
 	mitmListen := o.MITMListen
-	mitmInterceptHosts := append([]string(nil), o.MITMInterceptHosts...)
 
 	return RuntimeSettings{
 		WatchdogEnabled:           &watchdogEnabled,
@@ -1129,7 +1120,6 @@ func (o *ApplicationConfig) ToRuntimeSettings() RuntimeSettings {
 		LogoHorizontalFile:        &logoHorizontalFile,
 		FaviconFile:               &faviconFile,
 		MITMListen:                &mitmListen,
-		MITMInterceptHosts:        &mitmInterceptHosts,
 	}
 }
 
@@ -1354,9 +1344,6 @@ func (o *ApplicationConfig) ApplyRuntimeSettings(settings *RuntimeSettings) (req
 
 	if settings.MITMListen != nil {
 		o.MITMListen = *settings.MITMListen
-	}
-	if settings.MITMInterceptHosts != nil {
-		o.MITMInterceptHosts = append([]string(nil), *settings.MITMInterceptHosts...)
 	}
 
 	// Note: ApiKeys requires special handling (merging with startup keys) - handled in caller

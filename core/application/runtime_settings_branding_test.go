@@ -87,23 +87,16 @@ var _ = Describe("loadRuntimeSettingsFromFile", func() {
 		})
 	})
 
-	// MITM listener fields. Like branding, the file is the only source —
-	// no env vars exist for these — so a regression here means an admin
-	// who configured the MITM listener via /api/settings loses it on
-	// restart even though the values are still on disk in the volume.
-	// Reproduces the user-reported bug: docker-compose volume has the
-	// saved listener address but the UI shows no listener after a reboot.
+	// MITM listener address. The file is the only source — no env var
+	// exists — so a regression here means an admin who configured the
+	// listener via /api/settings loses it after a reboot, even though
+	// the value is still on disk in the volume. (Intercept hosts now
+	// live in model YAML mitm.hosts: blocks, not runtime_settings.json.)
 	Describe("MITM fields", func() {
 		It("loads mitm_listen", func() {
 			cfg := &config.ApplicationConfig{DynamicConfigsDir: seedSettings(`{"mitm_listen": ":8443"}`)}
 			loadRuntimeSettingsFromFile(cfg)
 			Expect(cfg.MITMListen).To(Equal(":8443"))
-		})
-
-		It("loads mitm_intercept_hosts", func() {
-			cfg := &config.ApplicationConfig{DynamicConfigsDir: seedSettings(`{"mitm_intercept_hosts": ["api.openai.com", "api.anthropic.com"]}`)}
-			loadRuntimeSettingsFromFile(cfg)
-			Expect(cfg.MITMInterceptHosts).To(ConsistOf("api.openai.com", "api.anthropic.com"))
 		})
 
 		It("does not override an explicit CLI flag", func() {
@@ -113,17 +106,6 @@ var _ = Describe("loadRuntimeSettingsFromFile", func() {
 			}
 			loadRuntimeSettingsFromFile(cfg)
 			Expect(cfg.MITMListen).To(Equal(":9999"), "CLI flag must win over the persisted file value")
-		})
-
-		// Symmetric with MITMListen above: CLI must win.
-		It("does not override an explicit MITMInterceptHosts CLI flag", func() {
-			cfg := &config.ApplicationConfig{
-				DynamicConfigsDir:  seedSettings(`{"mitm_intercept_hosts": ["api.openai.com"]}`),
-				MITMInterceptHosts: []string{"only-this.example.com"},
-			}
-			loadRuntimeSettingsFromFile(cfg)
-			Expect(cfg.MITMInterceptHosts).To(ConsistOf("only-this.example.com"),
-				"CLI-supplied intercept allowlist must win over the persisted file value")
 		})
 	})
 

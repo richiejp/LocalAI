@@ -65,6 +65,11 @@ type Application struct {
 	mitmCA             atomic.Pointer[mitm.CA]
 	mitmServer         atomic.Pointer[mitm.Server]
 	mitmMutex          sync.Mutex // serializes Stop+Start; readers use atomic loads
+	// mitmHostConflicts records duplicate-host claims across model configs.
+	// Non-empty disables the MITM listener until resolved — the strict
+	// 1-to-1 host↔model invariant the dispatcher relies on. Read by
+	// /api/middleware/status so the admin UI can surface the cause.
+	mitmHostConflicts atomic.Pointer[map[string][]string]
 	routerDecisions    router.DecisionStore
 	watchdogMutex      sync.Mutex
 	watchdogStop       chan bool
@@ -250,6 +255,29 @@ func (a *Application) MITMCA() *mitm.CA { return a.mitmCA.Load() }
 
 // MITMServer returns the running MITM proxy or nil.
 func (a *Application) MITMServer() *mitm.Server { return a.mitmServer.Load() }
+
+// MITMHostConflicts returns a snapshot of host→[]model-name pairs that
+// are claimed by 2+ model configs. Empty when the 1-to-1 invariant
+// holds. Non-empty disables the MITM listener — read by the admin
+// status endpoint to explain why.
+func (a *Application) MITMHostConflicts() map[string][]string {
+	p := a.mitmHostConflicts.Load()
+	if p == nil {
+		return nil
+	}
+	return *p
+}
+
+// MITMHostOwners returns the host→model-name map, useful for the
+// admin status endpoint. The lookup is recomputed on each call to
+// stay current with model-config edits without needing a
+// MITMRestart.
+func (a *Application) MITMHostOwners() map[string]string {
+	if a.backendLoader == nil {
+		return nil
+	}
+	return a.backendLoader.MITMHostOwners().Owners
+}
 
 // RouterDecisions returns the routing decision store. nil when stats
 // are disabled (--disable-stats); the RouteModel middleware skips the

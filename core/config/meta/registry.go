@@ -372,5 +372,19 @@ func DefaultRegistry() map[string]FieldMetaOverride {
 			Min:         f64(0),
 			Order:       213,
 		},
+
+		// --- MITM intercept hosts ---
+		// Each host listed here is claimed by this model config; the
+		// cloudproxy MITM listener (see Middleware → MITM Proxy) uses
+		// THIS config's pii: settings to filter the intercepted traffic.
+		// A host claimed by two configs is a critical error — the
+		// listener refuses to start until resolved.
+		"mitm.hosts": {
+			Section:     "other",
+			Label:       "MITM Intercept Hosts",
+			Description: "Hostnames the cloudproxy MITM proxy terminates TLS for on behalf of this model config. PII filtering and pattern overrides flow from this model when the host is intercepted. Each host must be unique across all configs.",
+			Component:   "string-list",
+			Order:       220,
+		},
 	}
 }

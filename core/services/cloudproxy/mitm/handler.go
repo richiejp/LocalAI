@@ -40,6 +40,13 @@ type PIIHandlerOptions struct {
 	// upstream URL. Identity by default; tests inject a httptest
 	// listener address.
 	DialHost func(host string) string
+
+	// HostsWithPIIDisabled lists destination hosts whose request
+	// bodies should NOT run through the redactor. TLS termination,
+	// upstream forwarding, and audit events still happen — only the
+	// regex pass is bypassed. Useful for telemetry/probe endpoints
+	// whose bodies aren't PII-shaped.
+	HostsWithPIIDisabled []string
 }
 
 func NewPIIHandler(opts PIIHandlerOptions) InterceptHandler {
@@ -74,6 +81,11 @@ func NewPIIHandler(opts PIIHandlerOptions) InterceptHandler {
 		}
 	}
 
+	piiDisabled := make(map[string]bool, len(opts.HostsWithPIIDisabled))
+	for _, h := range opts.HostsWithPIIDisabled {
+		piiDisabled[strings.ToLower(strings.TrimSpace(h))] = true
+	}
+
 	d := &piiDispatcher{
 		client:        &http.Client{Transport: transport},
 		redactor:      opts.Redactor,
@@ -81,6 +93,7 @@ func NewPIIHandler(opts PIIHandlerOptions) InterceptHandler {
 		patternAction: patternAction,
 		corrHeader:    corrHeader,
 		dialHost:      dialHost,
+		piiDisabled:   piiDisabled,
 	}
 	return d.serve
 }
@@ -92,6 +105,7 @@ type piiDispatcher struct {
 	patternAction map[string]pii.Action
 	corrHeader    string
 	dialHost      func(host string) string
+	piiDisabled   map[string]bool
 	eventSeq      atomic.Uint64
 }
 
@@ -121,7 +135,7 @@ func (d *piiDispatcher) serve(w http.ResponseWriter, r *http.Request, host strin
 	}
 
 	shape := classifyRequestShape(host, r.URL.Path)
-	if d.redactor != nil && shape != shapeUnknown {
+	if d.redactor != nil && shape != shapeUnknown && !d.piiDisabled[strings.ToLower(host)] {
 		redacted, blocked, err := d.redactRequest(body, shape, correlationID)
 		switch {
 		case err != nil:
@@ -150,7 +164,7 @@ func (d *piiDispatcher) serve(w http.ResponseWriter, r *http.Request, host strin
 		http.Error(w, "mitm: upstream: "+err.Error(), http.StatusBadGateway)
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	for k, vs := range resp.Header {
 		if isHopByHop(k) || strings.EqualFold(k, "Transfer-Encoding") || strings.EqualFold(k, "Content-Length") {

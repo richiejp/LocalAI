@@ -104,6 +104,28 @@ const MODEL_TEMPLATES = [
       'pii.enabled': true,
     },
   },
+  {
+    id: 'mitm',
+    label: 'MITM Intercept',
+    icon: 'fa-shield-halved',
+    description: 'Bind a hostname to this config for the cloudproxy MITM listener. PII filtering and pattern overrides flow from this config when the host is intercepted.',
+    // The mitm- name prefix is a convention, not a contract — the
+    // dispatcher looks up by host, not name. Prefixing keeps the
+    // config out of the way of callable model names so a chat client
+    // accidentally requesting "anthropic" doesn't hit a backendless
+    // intercept config.
+    //
+    // pii.patterns is pre-seeded with an empty list so the override
+    // editor is visible by default — admins typically want to tighten
+    // a couple of pattern actions when intercepting a cloud provider.
+    // An empty list serializes out and the redactor ignores it.
+    fields: {
+      'name': 'mitm-anthropic',
+      'mitm.hosts': ['api.anthropic.com'],
+      'pii.enabled': true,
+      'pii.patterns': [],
+    },
+  },
 ]
 
 export default MODEL_TEMPLATES

@@ -107,7 +107,7 @@ func (c *Client) do(ctx context.Context, method, path string, body any, out any)
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	respBody, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -291,7 +291,7 @@ func (c *Client) ImportModelURI(ctx context.Context, req localaitools.ImportMode
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	respBody, _ := io.ReadAll(resp.Body)
 
 	// 400 with `error: "ambiguous import"` is not a transport error — it's the
@@ -637,8 +637,21 @@ func (c *Client) SetPIIPatternAction(ctx context.Context, req localaitools.PIIPa
 	if req.ID == "" {
 		return fmt.Errorf("pattern id is required")
 	}
-	return c.do(ctx, http.MethodPut, routePIIPatternByID(req.ID),
-		map[string]string{"action": req.Action}, nil)
+	body := map[string]any{}
+	if req.Action != "" {
+		body["action"] = req.Action
+	}
+	if req.Disabled != nil {
+		body["disabled"] = *req.Disabled
+	}
+	if len(body) == 0 {
+		return fmt.Errorf("must specify action and/or disabled")
+	}
+	return c.do(ctx, http.MethodPut, routePIIPatternByID(req.ID), body, nil)
+}
+
+func (c *Client) PersistPIIPatterns(ctx context.Context) error {
+	return c.do(ctx, http.MethodPost, routePIIPatternsPersist, nil, nil)
 }
 
 func (c *Client) GetMiddlewareStatus(ctx context.Context) (*localaitools.MiddlewareStatus, error) {

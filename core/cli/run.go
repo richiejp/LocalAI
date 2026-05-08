@@ -157,9 +157,8 @@ type RunCMD struct {
 	Version bool
 
 	// Cloud-proxy MITM listener (off by default).
-	MITMListen         string   `env:"LOCALAI_MITM_LISTEN" help:"Address (host:port) for the cloudproxy MITM listener. Empty = disabled. Clients set HTTPS_PROXY=http://<this>:<port>." group:"middleware"`
-	MITMCADir          string   `env:"LOCALAI_MITM_CA_DIR" type:"path" help:"Directory holding the MITM proxy CA cert + key. Defaults to <data-path>/mitm-ca." group:"middleware"`
-	MITMInterceptHosts []string `env:"LOCALAI_MITM_INTERCEPT_HOSTS" help:"Hostnames the MITM proxy terminates TLS for (defaults to api.anthropic.com, api.openai.com). Repeat the flag or comma-separate." group:"middleware"`
+	MITMListen string `env:"LOCALAI_MITM_LISTEN" help:"Address (host:port) for the cloudproxy MITM listener. Empty = disabled. Clients set HTTPS_PROXY=http://<this>:<port>. Intercept hosts are declared per-model via the model YAML mitm.hosts: block; create one from the Add Model UI." group:"middleware"`
+	MITMCADir  string `env:"LOCALAI_MITM_CA_DIR" type:"path" help:"Directory holding the MITM proxy CA cert + key. Defaults to <data-path>/mitm-ca." group:"middleware"`
 }
 
 func (r *RunCMD) Run(ctx *cliContext.Context) error {
@@ -220,7 +219,6 @@ func (r *RunCMD) Run(ctx *cliContext.Context) error {
 		config.WithAPIAddress(r.Address),
 		config.WithMITMListen(r.MITMListen),
 		config.WithMITMCADir(r.MITMCADir),
-		config.WithMITMInterceptHosts(r.MITMInterceptHosts),
 		config.WithAgentJobRetentionDays(r.AgentJobRetentionDays),
 		config.WithLlamaCPPTunnelCallback(func(tunnels []string) {
 			tunnelEnvVar := strings.Join(tunnels, ",")

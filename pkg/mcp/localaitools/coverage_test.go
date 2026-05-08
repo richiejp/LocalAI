@@ -56,6 +56,7 @@ var toolToHTTPRoute = map[string]string{
 	ToolToggleModelPinned:   "PUT /models/toggle-pinned/:name/:action",
 	ToolSetBranding:         "POST /api/settings (instance_name, instance_tagline)",
 	ToolSetPIIPatternAction: "PUT /api/pii/patterns/:id",
+	ToolPersistPIIPatterns:  "POST /api/pii/patterns/persist",
 }
 
 // allKnownTools is the union of expectedFullCatalog (defined in

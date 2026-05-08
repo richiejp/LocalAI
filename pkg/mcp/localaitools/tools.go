@@ -39,6 +39,7 @@ const (
 	ToolToggleModelPinned = "toggle_model_pinned"
 	ToolSetBranding       = "set_branding"
 	ToolSetPIIPatternAction = "set_pii_pattern_action"
+	ToolPersistPIIPatterns  = "persist_pii_patterns"
 )
 
 // DefaultServerName is the MCP Implementation.Name surfaced when

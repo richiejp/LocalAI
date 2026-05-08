@@ -47,13 +47,13 @@ func registerMiddlewareTools(s *mcp.Server, client LocalAIClient, opts Options) 
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        ToolSetPIIPatternAction,
-		Description: "Change a PII pattern's action (mask|block|route_local) in-process. TRANSIENT: the change is lost on restart. To persist, edit --pii-config YAML and restart. Admin-required.",
+		Description: "Change a PII pattern's action (mask|block|route_local) and/or disabled state in-process. TRANSIENT: the mutation is lost on restart unless followed by persist_pii_patterns. Admin-required.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args PIIPatternActionUpdate) (*mcp.CallToolResult, any, error) {
 		if args.ID == "" {
 			return errorResultf("id is required"), nil, nil
 		}
-		if args.Action == "" {
-			return errorResultf("action is required (mask, block, or route_local)"), nil, nil
+		if args.Action == "" && args.Disabled == nil {
+			return errorResultf("at least one of action (mask, block, route_local) or disabled must be set"), nil, nil
 		}
 		if err := client.SetPIIPatternAction(ctx, args); err != nil {
 			return errorResult(err), nil, nil
@@ -61,7 +61,18 @@ func registerMiddlewareTools(s *mcp.Server, client LocalAIClient, opts Options) 
 		return jsonResult(map[string]any{
 			"id":        args.ID,
 			"action":    args.Action,
+			"disabled":  args.Disabled,
 			"persisted": false,
 		}), nil, nil
+	})
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        ToolPersistPIIPatterns,
+		Description: "Snapshot the live PII redactor's per-pattern (action, disabled) state into runtime_settings.json so it re-applies on the next process start. Pairs with set_pii_pattern_action — that one is in-process; this one persists. Admin-required.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, any, error) {
+		if err := client.PersistPIIPatterns(ctx); err != nil {
+			return errorResult(err), nil, nil
+		}
+		return jsonResult(map[string]any{"persisted": true}), nil, nil
 	})
 }

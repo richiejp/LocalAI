@@ -253,7 +253,7 @@ func UpdateSettingsEndpoint(app *application.Application) echo.HandlerFunc {
 			}
 		}
 
-		if settings.MITMListen != nil || settings.MITMInterceptHosts != nil {
+		if settings.MITMListen != nil {
 			if err := app.RestartMITM(); err != nil {
 				xlog.Error("Failed to restart MITM proxy", "error", err)
 				return c.JSON(http.StatusInternalServerError, schema.SettingsResponse{

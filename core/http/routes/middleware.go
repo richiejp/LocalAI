@@ -8,6 +8,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 	"github.com/mudler/LocalAI/core/application"
+	"github.com/mudler/LocalAI/core/config"
 	"github.com/mudler/LocalAI/core/http/auth"
 	"github.com/mudler/LocalAI/core/services/routing/router"
 )
@@ -166,13 +167,33 @@ func buildMITMStatus(app *application.Application) map[string]any {
 	ca := app.MITMCA()
 	cfg := app.ApplicationConfig()
 
+	// MITM-bound model configs — anything with an mitm: block, even
+	// if hosts is empty. Surfaces a "fresh from template" config the
+	// admin started but hasn't yet attached a host to.
+	mitmModels := []map[string]any{}
+	for _, mc := range app.ModelConfigLoader().GetModelConfigsByFilter(func(_ string, c *config.ModelConfig) bool {
+		return len(c.MITM.Hosts) > 0
+	}) {
+		mitmModels = append(mitmModels, map[string]any{
+			"name":        mc.Name,
+			"hosts":       mc.MITM.Hosts,
+			"pii_enabled": mc.PIIIsEnabled(),
+			"backend":     mc.Backend,
+		})
+	}
+
 	out := map[string]any{
 		"running":         srv != nil,
 		"listen_addr":     "",
 		"configured_addr": cfg.MITMListen,
-		"intercept_hosts": cfg.MITMInterceptHosts,
+		"host_owners":     app.MITMHostOwners(),
+		"host_conflicts":  app.MITMHostConflicts(),
+		"models":          mitmModels,
 		"ca_available":    ca != nil,
 		"ca_cert_url":     "",
+	}
+	if conflicts := app.MITMHostConflicts(); len(conflicts) > 0 {
+		out["error"] = "MITM listener disabled: duplicate host claims across model configs (see host_conflicts). Resolve by editing the conflicting model YAMLs so each host appears in at most one mitm.hosts list."
 	}
 	if srv != nil {
 		out["listen_addr"] = srv.Addr()
@@ -210,6 +231,7 @@ func buildPIIStatus(app *application.Application) map[string]any {
 			"id":               p.ID,
 			"description":      p.Description,
 			"action":           string(p.Action),
+			"disabled":         p.Disabled,
 			"max_match_length": p.MaxMatchLength,
 		})
 	}

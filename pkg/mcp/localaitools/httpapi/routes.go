@@ -26,9 +26,10 @@ const (
 	routeSettings      = "/api/settings"
 	routeUsage         = "/api/usage"
 	routeUsageAll      = "/api/usage/all"
-	routePIIPatterns   = "/api/pii/patterns"
-	routePIIEvents     = "/api/pii/events"
-	routePIITest       = "/api/pii/test"
+	routePIIPatterns        = "/api/pii/patterns"
+	routePIIPatternsPersist = "/api/pii/patterns/persist"
+	routePIIEvents          = "/api/pii/events"
+	routePIITest            = "/api/pii/test"
 	routeMiddleware    = "/api/middleware/status"
 	routeRouterDecisions = "/api/router/decisions"
 )

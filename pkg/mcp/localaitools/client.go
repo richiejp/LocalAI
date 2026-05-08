@@ -85,9 +85,15 @@ type LocalAIClient interface {
 	// TestPIIRedaction dry-runs the redactor against text. No event
 	// is recorded.
 	TestPIIRedaction(ctx context.Context, req PIIRedactTestRequest) (*PIIRedactTestResult, error)
-	// SetPIIPatternAction mutates the named pattern's action in-process.
-	// Transient — restored to YAML defaults on restart. Admin-required.
+	// SetPIIPatternAction mutates the named pattern's action and/or
+	// disabled state in-process. Transient until PersistPIIPatterns is
+	// called — runtime_settings.json then applies the deltas on the
+	// next start. Admin-required.
 	SetPIIPatternAction(ctx context.Context, req PIIPatternActionUpdate) error
+
+	// PersistPIIPatterns snapshots the live redactor's per-pattern
+	// (action, disabled) state into runtime_settings.json. Admin-required.
+	PersistPIIPatterns(ctx context.Context) error
 
 	// ---- Middleware admin ----
 	// GetMiddlewareStatus returns the aggregated state surfaced on the

@@ -92,6 +92,7 @@ var expectedFullCatalog = sortedStrings(
 	ToolListKnownBackends,
 	ToolListNodes,
 	ToolListPIIPatterns,
+	ToolPersistPIIPatterns,
 	ToolReloadModels,
 	ToolSetBranding,
 	ToolSetPIIPatternAction,

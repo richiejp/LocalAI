@@ -52,19 +52,14 @@ var _ = Describe("RuntimeSettings persistence helpers", func() {
 	})
 
 	// MITM round trip pins the contract that loadRuntimeSettingsFromFile
-	// relies on: a listener and host allowlist saved via /api/settings
-	// must survive a write/read round trip so the next process restart
-	// can bring the listener back up. Drop either pointer and the MITM
-	// listener silently stays off after a reboot — the user-reported
-	// regression where docker-compose volumes have the saved values but
-	// the UI shows no listener.
+	// MITM listener address must survive a write/read round trip so the
+	// next process restart can bring the listener back up. (Intercept
+	// hosts now live in model YAML rather than runtime_settings.json.)
 	Describe("MITM round trip", func() {
-		It("preserves mitm_listen and mitm_intercept_hosts across read/write", func() {
+		It("preserves mitm_listen across read/write", func() {
 			listen := ":8443"
-			hosts := []string{"api.openai.com", "api.anthropic.com"}
 			Expect(cfg.WritePersistedSettings(config.RuntimeSettings{
-				MITMListen:         &listen,
-				MITMInterceptHosts: &hosts,
+				MITMListen: &listen,
 			})).To(Succeed())
 
 			got, err := cfg.ReadPersistedSettings()
@@ -72,8 +67,6 @@ var _ = Describe("RuntimeSettings persistence helpers", func() {
 
 			Expect(got.MITMListen).ToNot(BeNil())
 			Expect(*got.MITMListen).To(Equal(":8443"))
-			Expect(got.MITMInterceptHosts).ToNot(BeNil())
-			Expect(*got.MITMInterceptHosts).To(ConsistOf("api.openai.com", "api.anthropic.com"))
 		})
 	})
 

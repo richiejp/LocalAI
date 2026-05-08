@@ -238,12 +238,13 @@ type PIIEventSpan struct {
 }
 
 // PIIPatternActionUpdate is the input for set_pii_pattern_action.
-// The mutation is transient — it lives until process restart, when
-// patterns reload from --pii-config / DefaultPatterns. Persistent
-// changes belong in YAML.
+// At least one of Action or Disabled must be set. Mutations are
+// transient by default — call persist_pii_patterns to flush them
+// to runtime_settings.json so the next start re-applies them.
 type PIIPatternActionUpdate struct {
-	ID     string `json:"id"     jsonschema:"Pattern id to mutate (e.g. email, ssn, credit_card, api_key_prefix)."`
-	Action string `json:"action" jsonschema:"New action: mask, block, or route_local."`
+	ID       string `json:"id" jsonschema:"Pattern id to mutate (e.g. email, ssn, credit_card, api_key_prefix)."`
+	Action   string `json:"action,omitempty" jsonschema:"New action: mask, block, or route_local. Optional — omit to leave the action unchanged."`
+	Disabled *bool  `json:"disabled,omitempty" jsonschema:"Set true to skip this pattern entirely; false to re-enable. Optional — omit to leave enabled-state unchanged."`
 }
 
 // MiddlewareStatus is the aggregated /api/middleware/status payload —

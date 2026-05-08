@@ -100,6 +100,21 @@ type ModelConfig struct {
 	PII    PIIConfig    `yaml:"pii,omitempty" json:"pii,omitempty"`
 	Router RouterConfig `yaml:"router,omitempty" json:"router,omitempty"`
 	Proxy  ProxyConfig  `yaml:"proxy,omitempty" json:"proxy,omitempty"`
+	MITM   MITMModelConfig `yaml:"mitm,omitempty" json:"mitm,omitempty"`
+}
+
+// @Description MITM intercept binding for the model. When the cloudproxy
+// MITM listener is enabled and any host listed here appears in a CONNECT,
+// the proxy uses THIS model config's pii: settings to filter the
+// intercepted body. Strict 1-to-1: a host claimed by two configs is a
+// configuration error and disables the MITM listener until resolved.
+//
+// Lets an admin pair a host (api.anthropic.com) with the model's
+// PII overrides without maintaining a parallel per-host map.
+type MITMModelConfig struct {
+	// Hosts is the list of hostnames this model claims for MITM
+	// interception. Each entry must be unique across all model configs.
+	Hosts []string `yaml:"hosts,omitempty" json:"hosts,omitempty"`
 }
 
 // @Description Cloud passthrough proxy configuration. When the backend

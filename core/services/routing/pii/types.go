@@ -92,6 +92,11 @@ type Pattern struct {
 	ID          string
 	Description string
 	Action      Action
+	// Disabled skips the pattern entirely when true — useful for
+	// admins who want to keep a regex around (visible in the UI) but
+	// turn it off without removing the YAML entry. Default-false so
+	// every existing pattern stays active without touching its config.
+	Disabled bool
 	// MaxMatchLength is the longest possible match in characters. The
 	// streaming filter (subsystem 3, follow-up commit) uses this to
 	// size its tail buffer. For regex patterns we compute it at

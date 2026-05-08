@@ -89,6 +89,7 @@ func (stubClient) TestPIIRedaction(_ context.Context, req localaitools.PIIRedact
 func (stubClient) SetPIIPatternAction(_ context.Context, _ localaitools.PIIPatternActionUpdate) error {
 	return nil
 }
+func (stubClient) PersistPIIPatterns(_ context.Context) error { return nil }
 func (stubClient) GetMiddlewareStatus(_ context.Context) (*localaitools.MiddlewareStatus, error) {
 	return &localaitools.MiddlewareStatus{
 		PII: localaitools.MiddlewarePIIStatus{

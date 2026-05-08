@@ -3,7 +3,6 @@ package localaitools
 import (
 	"context"
 	"errors"
-	"fmt"
 	"sync"
 
 	"github.com/mudler/LocalAI/core/config"
@@ -286,6 +285,11 @@ func (f *fakeClient) SetPIIPatternAction(_ context.Context, req PIIPatternAction
 	return nil
 }
 
+func (f *fakeClient) PersistPIIPatterns(_ context.Context) error {
+	f.record("PersistPIIPatterns", nil)
+	return nil
+}
+
 func (f *fakeClient) GetRouterDecisions(_ context.Context, q RouterDecisionsQuery) ([]RouterDecision, error) {
 	f.record("GetRouterDecisions", q)
 	if f.getRouterDecisions != nil {
@@ -309,5 +313,3 @@ func (f *fakeClient) GetMiddlewareStatus(_ context.Context) (*MiddlewareStatus, 
 	}, nil
 }
 
-// boom is a sentinel error used by tests that want a deterministic error string.
-var boom = fmt.Errorf("boom")

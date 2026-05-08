@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback } from 'react'
-import { useOutletContext } from 'react-router-dom'
+import { useState, useEffect, useCallback, useRef } from 'react'
+import { useOutletContext, Link, useNavigate } from 'react-router-dom'
 import { apiUrl } from '../utils/basePath'
 import { settingsApi } from '../utils/api'
 import LoadingSpinner from '../components/LoadingSpinner'
@@ -78,8 +78,10 @@ export default function Middleware() {
   const [activeTab, setActiveTab] = useState('filtering')
   const [pendingPattern, setPendingPattern] = useState(null) // id while a PUT is in flight
 
-  const fetchAll = useCallback(async () => {
-    setLoading(true)
+  // silent=true on background polls: skips the loading spinner and
+  // suppresses toast spam if the server is briefly unreachable.
+  const fetchAll = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true)
     try {
       const [statusRes, eventsRes, decisionsRes] = await Promise.all([
         fetch(apiUrl('/api/middleware/status')),
@@ -98,32 +100,66 @@ export default function Middleware() {
         setDecisions(data.decisions || [])
       }
     } catch (err) {
-      addToast(`Failed to load middleware status: ${err.message}`, 'error')
+      if (!silent) addToast(`Failed to load middleware status: ${err.message}`, 'error')
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
     }
   }, [addToast])
 
   useEffect(() => { fetchAll() }, [fetchAll])
 
-  const setPatternAction = async (patternID, action) => {
+  // Auto-refresh every 5s so admins watching the Events / Routing tabs
+  // see new rows without manual refresh. Matches the Traces page cadence.
+  // ProxyTab guards against clobbering mid-typed config via its own
+  // `dirty` check, so the poll is safe while the form is in use.
+  const refreshRef = useRef(null)
+  useEffect(() => {
+    refreshRef.current = setInterval(() => fetchAll(true), 5000)
+    return () => clearInterval(refreshRef.current)
+  }, [fetchAll])
+
+  const mutatePattern = async (patternID, body, successMsg) => {
     setPendingPattern(patternID)
     try {
       const res = await fetch(apiUrl(`/api/pii/patterns/${encodeURIComponent(patternID)}`), {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action }),
+        body: JSON.stringify(body),
       })
       if (!res.ok) {
-        const body = await res.json().catch(() => ({}))
-        throw new Error(body.error || `HTTP ${res.status}`)
+        const data = await res.json().catch(() => ({}))
+        throw new Error(data.error || `HTTP ${res.status}`)
       }
-      addToast(`Pattern ${patternID}: action set to ${action} (transient until restart)`, 'success')
+      addToast(successMsg, 'success')
       await fetchAll()
     } catch (err) {
-      addToast(`Failed to set action: ${err.message}`, 'error')
+      addToast(`Failed to update pattern: ${err.message}`, 'error')
     } finally {
       setPendingPattern(null)
+    }
+  }
+
+  const setPatternAction = (patternID, action) =>
+    mutatePattern(patternID, { action }, `Pattern ${patternID}: action ${action} (transient — click "Save to disk" to persist)`)
+
+  const setPatternDisabled = (patternID, disabled) =>
+    mutatePattern(patternID, { disabled }, `Pattern ${patternID}: ${disabled ? 'disabled' : 'enabled'} (transient — click "Save to disk" to persist)`)
+
+  const [persisting, setPersisting] = useState(false)
+  const persistPatterns = async () => {
+    setPersisting(true)
+    try {
+      const res = await fetch(apiUrl('/api/pii/patterns/persist'), { method: 'POST' })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        throw new Error(data.error || `HTTP ${res.status}`)
+      }
+      const data = await res.json().catch(() => ({}))
+      addToast(`Saved ${data.override_count ?? 0} pattern override(s) to runtime_settings.json`, 'success')
+    } catch (err) {
+      addToast(`Failed to persist: ${err.message}`, 'error')
+    } finally {
+      setPersisting(false)
     }
   }
 
@@ -163,6 +199,9 @@ export default function Middleware() {
           status={status}
           pendingPattern={pendingPattern}
           onSetAction={setPatternAction}
+          onSetDisabled={setPatternDisabled}
+          onPersist={persistPatterns}
+          persisting={persisting}
         />
       ) : activeTab === 'routing' ? (
         <RoutingTab status={status} decisions={decisions} />
@@ -175,7 +214,7 @@ export default function Middleware() {
   )
 }
 
-function FilteringTab({ status, pendingPattern, onSetAction }) {
+function FilteringTab({ status, pendingPattern, onSetAction, onSetDisabled, onPersist, persisting }) {
   if (!status?.pii) return null
   const pii = status.pii
 
@@ -211,14 +250,25 @@ function FilteringTab({ status, pendingPattern, onSetAction }) {
       <div className="card" style={{ padding: 'var(--spacing-md)', marginBottom: 'var(--spacing-md)' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 'var(--spacing-sm)' }}>
           <span style={{ fontSize: '0.875rem', fontWeight: 600 }}>Active patterns</span>
-          <span style={{ fontSize: '0.6875rem', color: 'var(--color-text-muted)' }}>
-            Action changes are transient — restored to YAML defaults on restart.
-          </span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--spacing-sm)' }}>
+            <span style={{ fontSize: '0.6875rem', color: 'var(--color-text-muted)' }}>
+              Toggle / action edits are transient — click Save to disk to persist.
+            </span>
+            <button
+              className="btn btn-secondary btn-sm"
+              onClick={onPersist}
+              disabled={persisting}
+              style={{ fontSize: '0.75rem' }}
+            >
+              <i className={`fas ${persisting ? 'fa-spinner fa-spin' : 'fa-save'}`} /> Save to disk
+            </button>
+          </div>
         </div>
         <div className="table-container">
           <table className="table">
             <thead>
               <tr>
+                <th style={{ width: 80 }}>Enabled</th>
                 <th style={{ width: 140 }}>Pattern</th>
                 <th>Description</th>
                 <th style={{ width: 110 }}>Action</th>
@@ -226,8 +276,21 @@ function FilteringTab({ status, pendingPattern, onSetAction }) {
               </tr>
             </thead>
             <tbody>
-              {pii.patterns.map(p => (
-                <tr key={p.id}>
+              {pii.patterns.map(p => {
+                const enabled = !p.disabled
+                const muted = p.disabled
+                return (
+                <tr key={p.id} style={muted ? { opacity: 0.55 } : undefined}>
+                  <td>
+                    <input
+                      type="checkbox"
+                      checked={enabled}
+                      disabled={pendingPattern === p.id}
+                      onChange={e => onSetDisabled(p.id, !e.target.checked)}
+                      style={{ cursor: 'pointer' }}
+                      aria-label={`Enable ${p.id} pattern`}
+                    />
+                  </td>
                   <td style={{ fontFamily: 'var(--font-mono)', fontSize: '0.8125rem', fontWeight: 600 }}>{p.id}</td>
                   <td style={{ fontSize: '0.8125rem', color: 'var(--color-text-secondary)' }}>{p.description}</td>
                   <td>{actionBadge(p.action)}</td>
@@ -238,7 +301,7 @@ function FilteringTab({ status, pendingPattern, onSetAction }) {
                           key={a}
                           className={`btn btn-sm ${p.action === a ? 'btn-primary' : 'btn-secondary'}`}
                           onClick={() => onSetAction(p.id, a)}
-                          disabled={pendingPattern === p.id || p.action === a}
+                          disabled={pendingPattern === p.id || p.action === a || p.disabled}
                           style={{ fontSize: '0.6875rem', padding: '2px 8px' }}
                         >
                           {a}
@@ -247,7 +310,7 @@ function FilteringTab({ status, pendingPattern, onSetAction }) {
                     </div>
                   </td>
                 </tr>
-              ))}
+              )})}
             </tbody>
           </table>
         </div>
@@ -270,6 +333,7 @@ function FilteringTab({ status, pendingPattern, onSetAction }) {
                 <th style={{ width: 80 }}>PII</th>
                 <th style={{ width: 110 }}>Source</th>
                 <th>Pattern overrides</th>
+                <th style={{ width: 80 }}>Edit</th>
               </tr>
             </thead>
             <tbody>
@@ -286,11 +350,21 @@ function FilteringTab({ status, pendingPattern, onSetAction }) {
                       ? Object.entries(m.overrides).map(([k, v]) => `${k}=${v}`).join(', ')
                       : <span style={{ color: 'var(--color-text-muted)' }}>—</span>}
                   </td>
+                  <td>
+                    <Link
+                      to={`/app/model-editor/${encodeURIComponent(m.name)}`}
+                      className="btn btn-secondary btn-sm"
+                      style={{ fontSize: '0.6875rem', padding: '2px 8px' }}
+                      title={`Edit ${m.name}.yaml`}
+                    >
+                      <i className="fas fa-pen-to-square" /> Edit
+                    </Link>
+                  </td>
                 </tr>
               ))}
               {(!pii.models || pii.models.length === 0) && (
                 <tr>
-                  <td colSpan={5} style={{ textAlign: 'center', color: 'var(--color-text-muted)', padding: 'var(--spacing-md)' }}>
+                  <td colSpan={6} style={{ textAlign: 'center', color: 'var(--color-text-muted)', padding: 'var(--spacing-md)' }}>
                     No models loaded.
                   </td>
                 </tr>
@@ -419,35 +493,27 @@ function RoutingTab({ status, decisions }) {
 }
 
 function ProxyTab({ status, addToast, onChanged }) {
+  const navigate = useNavigate()
   const mitm = status?.mitm
   const serverListen = mitm?.configured_addr || ''
-  const serverHosts = (mitm?.intercept_hosts || []).join(', ')
 
   const [listen, setListen] = useState(serverListen)
-  const [hosts, setHosts] = useState(serverHosts)
   const [saving, setSaving] = useState(false)
 
-  const dirty = listen !== serverListen || hosts !== serverHosts
+  const dirty = listen !== serverListen
 
-  // Refresh local state from the server only when (a) the server-side
-  // values actually changed (string compare, not array reference) and
-  // (b) the user has no pending edits to clobber. Without the dirty
-  // gate, a Refresh / post-save refetch wipes mid-typed input.
+  // Refresh local state from the server only when the user has no
+  // pending edits to clobber.
   useEffect(() => {
     if (dirty) return
     setListen(serverListen)
-    setHosts(serverHosts)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [serverListen, serverHosts])
+  }, [serverListen])
 
   const save = async () => {
     setSaving(true)
     try {
-      const parsedHosts = hosts.split(/[,\s]+/).map(h => h.trim()).filter(Boolean)
-      const body = await settingsApi.save({
-        mitm_listen: listen,
-        mitm_intercept_hosts: parsedHosts,
-      })
+      const body = await settingsApi.save({ mitm_listen: listen })
       if (body && body.success === false) {
         throw new Error(body.error || 'unknown error')
       }
@@ -470,8 +536,39 @@ function ProxyTab({ status, addToast, onChanged }) {
     )
   }
 
+  const conflicts = mitm.host_conflicts || {}
+  const owners = mitm.host_owners || {}
+  const conflictHosts = Object.keys(conflicts)
+  const ownerEntries = Object.entries(owners)
+  const mitmModels = mitm.models || []
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--spacing-md)' }}>
+      {conflictHosts.length > 0 && (
+        <div className="card" style={{ padding: 'var(--spacing-md)', borderLeft: '3px solid var(--color-error)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--spacing-sm)', marginBottom: 'var(--spacing-xs)' }}>
+            <i className="fas fa-triangle-exclamation" style={{ color: 'var(--color-error)' }} />
+            <span style={{ fontWeight: 600 }}>MITM listener disabled — duplicate host claims</span>
+          </div>
+          <p style={{ fontSize: '0.8125rem', color: 'var(--color-text-secondary)', margin: 0 }}>
+            Each MITM intercept host must be owned by exactly one model config. Resolve by editing the conflicting model YAMLs.
+          </p>
+          <ul style={{ margin: 'var(--spacing-xs) 0 0', paddingLeft: 20, fontSize: '0.8125rem' }}>
+            {conflictHosts.map(h => (
+              <li key={h}>
+                <code style={{ fontFamily: 'var(--font-mono)' }}>{h}</code>
+                {' claimed by: '}
+                {(conflicts[h] || []).map(name => (
+                  <Link key={name} to={`/app/model-editor/${encodeURIComponent(name)}`} style={{ marginRight: 6, fontFamily: 'var(--font-mono)' }}>
+                    {name}
+                  </Link>
+                ))}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       <div className="card" style={{ padding: 'var(--spacing-lg)' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--spacing-md)', marginBottom: 'var(--spacing-md)' }}>
           <h2 style={{ fontSize: '1rem', fontWeight: 600, margin: 0 }}>State</h2>
@@ -488,6 +585,22 @@ function ProxyTab({ status, addToast, onChanged }) {
           subscription (Claude Code, Codex CLI). Non-allowlisted hosts get a
           plain CONNECT tunnel — no inspection, no CA-trust required.
         </p>
+        {ownerEntries.length > 0 ? (
+          <div style={{ marginBottom: 'var(--spacing-sm)', fontSize: '0.75rem', color: 'var(--color-text-muted)' }}>
+            <div style={{ marginBottom: 4 }}>Hosts claimed by model configs (PII settings flow from the owning config):</div>
+            <ul style={{ margin: 0, paddingLeft: 20, fontFamily: 'var(--font-mono)' }}>
+              {ownerEntries.map(([host, name]) => (
+                <li key={host}>
+                  {host} → <Link to={`/app/model-editor/${encodeURIComponent(name)}`}>{name}</Link>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : (
+          <div style={{ marginBottom: 'var(--spacing-sm)', fontSize: '0.75rem', color: 'var(--color-text-muted)' }}>
+            No model config declares an MITM intercept host. Without one, every CONNECT tunnels through unmodified. Create one from the Add Model page using the MITM Intercept template.
+          </div>
+        )}
         {mitm.ca_available ? (
           <a
             className="btn btn-secondary btn-sm"
@@ -504,6 +617,55 @@ function ProxyTab({ status, addToast, onChanged }) {
       </div>
 
       <div className="card" style={{ padding: 'var(--spacing-lg)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 'var(--spacing-sm)' }}>
+          <h2 style={{ fontSize: '1rem', fontWeight: 600, margin: 0 }}>MITM Models</h2>
+          <button
+            className="btn btn-secondary btn-sm"
+            onClick={() => navigate('/app/model-editor?template=mitm')}
+            title="Open the model editor with the MITM Intercept template pre-selected"
+          >
+            <i className="fas fa-plus" /> Add MITM model
+          </button>
+        </div>
+        {mitmModels.length === 0 ? (
+          <div style={{ fontSize: '0.8125rem', color: 'var(--color-text-muted)' }}>
+            No model config declares <code>mitm.hosts</code>. Use the Add MITM model button above — the template defaults to <code>api.anthropic.com</code> with PII filtering on.
+          </div>
+        ) : (
+          <table className="table">
+            <thead>
+              <tr>
+                <th>Model</th>
+                <th>Hosts</th>
+                <th style={{ width: 80 }}>PII</th>
+                <th style={{ width: 80 }}>Edit</th>
+              </tr>
+            </thead>
+            <tbody>
+              {mitmModels.map(m => (
+                <tr key={m.name}>
+                  <td style={{ fontFamily: 'var(--font-mono)', fontSize: '0.8125rem', fontWeight: 600 }}>{m.name}</td>
+                  <td style={{ fontFamily: 'var(--font-mono)', fontSize: '0.75rem' }}>
+                    {(m.hosts || []).join(', ')}
+                  </td>
+                  <td>{enabledBadge(m.pii_enabled)}</td>
+                  <td>
+                    <Link
+                      to={`/app/model-editor/${encodeURIComponent(m.name)}`}
+                      className="btn btn-secondary btn-sm"
+                      style={{ fontSize: '0.6875rem', padding: '2px 8px' }}
+                    >
+                      <i className="fas fa-pen-to-square" /> Edit
+                    </Link>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      <div className="card" style={{ padding: 'var(--spacing-lg)' }}>
         <h2 style={{ fontSize: '1rem', fontWeight: 600, marginTop: 0, marginBottom: 'var(--spacing-md)' }}>Configuration</h2>
 
         <label style={{ display: 'block', marginBottom: 'var(--spacing-md)' }}>
@@ -516,23 +678,16 @@ function ProxyTab({ status, addToast, onChanged }) {
             style={{ width: '100%', padding: '8px 12px', fontFamily: 'var(--font-mono)', fontSize: '0.875rem', background: 'var(--color-bg-tertiary)', border: '1px solid var(--color-border-default)', borderRadius: 'var(--radius-sm)', color: 'var(--color-text-primary)' }}
           />
           <div style={{ marginTop: 'var(--spacing-xs)', fontSize: '0.75rem', color: 'var(--color-text-muted)' }}>
-            Bind address for the proxy listener. Empty disables it. Bind to <code>127.0.0.1:port</code> unless the listener is reachable only from clients you control — there is no auth on the CONNECT port.
+            Bind address for the proxy listener. Empty disables it. Bind to <code>127.0.0.1:port</code> unless the listener is reachable only from clients you control — there is no auth on the CONNECT port. Clients connect to the proxy over plain HTTP (use <code>http://</code>, even for the <code>HTTPS_PROXY</code> env var); the proxy terminates TLS for allowlisted hosts inside the CONNECT tunnel.
           </div>
         </label>
 
-        <label style={{ display: 'block', marginBottom: 'var(--spacing-md)' }}>
-          <div style={{ fontSize: '0.875rem', fontWeight: 500, marginBottom: 'var(--spacing-xs)' }}>Intercept hosts</div>
-          <textarea
-            rows={3}
-            value={hosts}
-            onChange={e => setHosts(e.target.value)}
-            placeholder="api.anthropic.com, api.openai.com"
-            style={{ width: '100%', padding: '8px 12px', fontFamily: 'var(--font-mono)', fontSize: '0.875rem', background: 'var(--color-bg-tertiary)', border: '1px solid var(--color-border-default)', borderRadius: 'var(--radius-sm)', color: 'var(--color-text-primary)', resize: 'vertical' }}
-          />
-          <div style={{ marginTop: 'var(--spacing-xs)', fontSize: '0.75rem', color: 'var(--color-text-muted)' }}>
-            Comma- or whitespace-separated hostnames the proxy terminates TLS for. Hosts not listed get a plain CONNECT tunnel.
-          </div>
-        </label>
+        <div style={{ marginBottom: 'var(--spacing-md)', fontSize: '0.8125rem', color: 'var(--color-text-secondary)' }}>
+          Intercept hosts are declared per-model in the model YAML's
+          {' '}<code style={{ fontFamily: 'var(--font-mono)' }}>mitm.hosts:</code>{' '}
+          block. Each host is owned by exactly one model config; PII filtering and
+          pattern overrides flow from the owning config when the host is intercepted.
+        </div>
 
         <div style={{ display: 'flex', gap: 'var(--spacing-sm)' }}>
           <button
@@ -545,10 +700,7 @@ function ProxyTab({ status, addToast, onChanged }) {
           {dirty && (
             <button
               className="btn btn-ghost btn-sm"
-              onClick={() => {
-                setListen(mitm.configured_addr || '')
-                setHosts((mitm.intercept_hosts || []).join(', '))
-              }}
+              onClick={() => setListen(mitm.configured_addr || '')}
               disabled={saving}
             >
               Discard changes
@@ -562,7 +714,7 @@ function ProxyTab({ status, addToast, onChanged }) {
         <ol style={{ margin: 0, paddingLeft: 20, fontSize: '0.8125rem', color: 'var(--color-text-secondary)', lineHeight: 1.7 }}>
           <li>Download the CA cert (button above).</li>
           <li>Trust it on the client. For Node-based CLIs (Claude Code, Codex): <code style={{ fontFamily: 'var(--font-mono)' }}>export NODE_EXTRA_CA_CERTS=$(pwd)/localai-mitm-ca.crt</code></li>
-          <li>Point the client at the proxy: <code style={{ fontFamily: 'var(--font-mono)' }}>export HTTPS_PROXY=http://&lt;host&gt;:&lt;port&gt;</code></li>
+          <li>Point the client at the proxy: <code style={{ fontFamily: 'var(--font-mono)' }}>export HTTPS_PROXY=http://&lt;host&gt;:&lt;port&gt;</code> (yes, <code>http://</code> — clients speak plain HTTP to the proxy, which then terminates TLS for allowlisted hosts on the inner connection).</li>
         </ol>
       </div>
     </div>

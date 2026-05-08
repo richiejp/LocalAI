@@ -676,7 +676,68 @@ func (c *Client) SetPIIPatternAction(_ context.Context, req localaitools.PIIPatt
 	if req.ID == "" {
 		return errors.New("pattern id is required")
 	}
-	return c.PIIRedactor.SetAction(req.ID, pii.Action(req.Action))
+	if req.Action == "" && req.Disabled == nil {
+		return errors.New("must specify action and/or disabled")
+	}
+	if req.Action != "" {
+		if err := c.PIIRedactor.SetAction(req.ID, pii.Action(req.Action)); err != nil {
+			return err
+		}
+	}
+	if req.Disabled != nil {
+		if err := c.PIIRedactor.SetDisabled(req.ID, *req.Disabled); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// PersistPIIPatterns snapshots the current redactor state into
+// runtime_settings.json. Mirrors POST /api/pii/patterns/persist.
+func (c *Client) PersistPIIPatterns(_ context.Context) error {
+	if c.PIIRedactor == nil {
+		return errors.New("PII filter is disabled")
+	}
+	if c.AppConfig == nil {
+		return errors.New("app config not available")
+	}
+	existing, err := c.AppConfig.ReadPersistedSettings()
+	if err != nil {
+		return fmt.Errorf("read settings: %w", err)
+	}
+	defaults, err := pii.LoadConfig(c.AppConfig.PIIConfigPath)
+	if err != nil {
+		return fmt.Errorf("reload defaults: %w", err)
+	}
+	defaultByID := make(map[string]pii.Pattern, len(defaults))
+	for _, d := range defaults {
+		defaultByID[d.ID] = d
+	}
+	overrides := map[string]config.PIIPatternRuntimeOverride{}
+	for _, p := range c.PIIRedactor.Patterns() {
+		d, known := defaultByID[p.ID]
+		ov := config.PIIPatternRuntimeOverride{}
+		changed := false
+		if !known || p.Action != d.Action {
+			action := string(p.Action)
+			ov.Action = &action
+			changed = true
+		}
+		if !known || p.Disabled != d.Disabled {
+			disabled := p.Disabled
+			ov.Disabled = &disabled
+			changed = true
+		}
+		if changed {
+			overrides[p.ID] = ov
+		}
+	}
+	existing.PIIPatternOverrides = &overrides
+	if err := c.AppConfig.WritePersistedSettings(existing); err != nil {
+		return fmt.Errorf("write settings: %w", err)
+	}
+	c.AppConfig.PIIPatternOverrides = overrides
+	return nil
 }
 
 func (c *Client) GetRouterDecisions(ctx context.Context, q localaitools.RouterDecisionsQuery) ([]localaitools.RouterDecision, error) {

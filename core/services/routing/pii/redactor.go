@@ -70,6 +70,22 @@ func (r *Redactor) SetAction(id string, action Action) error {
 	return fmt.Errorf("unknown pattern id %q", id)
 }
 
+// SetDisabled toggles a pattern's enabled state in the live redactor.
+// Same COW publish as SetAction.
+func (r *Redactor) SetDisabled(id string, disabled bool) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i := range r.patterns {
+		if r.patterns[i].ID == id {
+			next := slices.Clone(r.patterns)
+			next[i].Disabled = disabled
+			r.patterns = next
+			return nil
+		}
+	}
+	return fmt.Errorf("unknown pattern id %q", id)
+}
+
 // Redact is a thin wrapper for callers that don't need per-request
 // action overrides. It applies each pattern's compiled-in default
 // action.
@@ -113,6 +129,9 @@ func (r *Redactor) RedactWithOverrides(text string, overrides map[string]Action)
 		if p.regex == nil {
 			// Pattern declared but Compile() not called. Skip rather
 			// than panic; the caller already saw an error from Compile.
+			continue
+		}
+		if p.Disabled {
 			continue
 		}
 		action := p.Action

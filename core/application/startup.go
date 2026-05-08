@@ -196,9 +196,27 @@ func New(opts ...config.AppOption) (*Application, error) {
 		}
 		application.piiRedactor = pii.NewRedactor(patterns)
 		application.piiEvents = pii.NewMemoryEventStore(0)
+		// Apply persisted per-pattern overrides — admins toggling
+		// action/disabled via the UI and clicking "Save to disk" land
+		// here on the next start. Bad ids are warned and ignored so a
+		// stale entry doesn't block startup.
+		for id, ov := range options.PIIPatternOverrides {
+			if ov.Action != nil {
+				if err := application.piiRedactor.SetAction(id, pii.Action(*ov.Action)); err != nil {
+					xlog.Warn("pii: persisted override skipped", "pattern", id, "error", err)
+					continue
+				}
+			}
+			if ov.Disabled != nil {
+				if err := application.piiRedactor.SetDisabled(id, *ov.Disabled); err != nil {
+					xlog.Warn("pii: persisted disable skipped", "pattern", id, "error", err)
+				}
+			}
+		}
 		xlog.Info("pii: filter enabled",
 			"patterns", len(patterns),
 			"config_path", options.PIIConfigPath,
+			"persisted_overrides", len(options.PIIPatternOverrides),
 		)
 	} else {
 		xlog.Info("pii: disabled by --disable-pii")
@@ -670,16 +688,23 @@ func loadRuntimeSettingsFromFile(options *config.ApplicationConfig) {
 		options.Branding.FaviconFile = *settings.FaviconFile
 	}
 
-	// MITM proxy. Like branding, the only source for these is the file —
-	// the CLI flags WithMITMListen / WithMITMInterceptHosts populate
-	// options at startup but if the user configured MITM via /api/settings
-	// after the fact, only the file holds the values. Apply when a CLI
-	// flag did not already set them, so an explicit --mitm-listen still wins.
+	// MITM listener address. The CLI flag WithMITMListen populates
+	// options at startup; if the user configured MITM via /api/settings
+	// after the fact, only the file holds the value. Apply when the
+	// CLI flag did not already set it. (Intercept hosts now live in
+	// model YAML mitm.hosts: rather than runtime_settings.json.)
 	if settings.MITMListen != nil && options.MITMListen == "" {
 		options.MITMListen = *settings.MITMListen
 	}
-	if settings.MITMInterceptHosts != nil && len(options.MITMInterceptHosts) == 0 {
-		options.MITMInterceptHosts = append([]string(nil), *settings.MITMInterceptHosts...)
+
+	// PII pattern overrides — file is the only source; CLI flags don't
+	// reach into this map. Apply unconditionally when present; the
+	// redactor wiring below sees the result on first construction.
+	if settings.PIIPatternOverrides != nil {
+		options.PIIPatternOverrides = make(map[string]config.PIIPatternRuntimeOverride, len(*settings.PIIPatternOverrides))
+		for id, ov := range *settings.PIIPatternOverrides {
+			options.PIIPatternOverrides[id] = ov
+		}
 	}
 
 	// Backend upgrade flags
