@@ -62,9 +62,9 @@ type Application struct {
 	fallbackUser       *auth.User
 	piiRedactor        *pii.Redactor
 	piiEvents          pii.EventStore
-	mitmCA             *mitm.CA
-	mitmServer         *mitm.Server
-	mitmMutex          sync.Mutex
+	mitmCA             atomic.Pointer[mitm.CA]
+	mitmServer         atomic.Pointer[mitm.Server]
+	mitmMutex          sync.Mutex // serializes Stop+Start; readers use atomic loads
 	routerDecisions    router.DecisionStore
 	watchdogMutex      sync.Mutex
 	watchdogStop       chan bool
@@ -245,14 +245,11 @@ func (a *Application) PIIEvents() pii.EventStore {
 }
 
 // MITMCA returns the cloudproxy MITM proxy's CA, or nil when the
-// MITM listener is disabled. Used by the admin endpoint that
-// serves the public CA cert for clients to trust.
-func (a *Application) MITMCA() *mitm.CA { return a.mitmCA }
+// MITM listener is disabled.
+func (a *Application) MITMCA() *mitm.CA { return a.mitmCA.Load() }
 
-// MITMServer returns the running MITM proxy or nil. Mostly useful
-// to expose the bound address (when started with port :0) and to
-// stop the listener cleanly on shutdown.
-func (a *Application) MITMServer() *mitm.Server { return a.mitmServer }
+// MITMServer returns the running MITM proxy or nil.
+func (a *Application) MITMServer() *mitm.Server { return a.mitmServer.Load() }
 
 // RouterDecisions returns the routing decision store. nil when stats
 // are disabled (--disable-stats); the RouteModel middleware skips the

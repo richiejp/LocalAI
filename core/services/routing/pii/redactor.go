@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -41,19 +42,17 @@ func (r *Redactor) MaxPatternLength() int { return r.maxLen }
 func (r *Redactor) Patterns() []Pattern {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	out := make([]Pattern, len(r.patterns))
-	copy(out, r.patterns)
-	return out
+	return slices.Clone(r.patterns)
 }
 
-// SetAction overrides the action for a single pattern in place. Returns
-// an error when the id is unknown or the action is not one of the
-// canonical Action constants. Used by the /api/pii/patterns/:id admin
-// endpoint and the set_pii_pattern_action MCP tool — both paths are
-// transient (the change is lost on process restart unless the operator
-// also persists it via --pii-config). Concurrent reads from Redact are
-// safe because the slice element is replaced atomically under the
-// write lock.
+// SetAction overrides the action for a single pattern. Used by the
+// /api/pii/patterns/:id admin endpoint and the set_pii_pattern_action
+// MCP tool — transient until process restart unless persisted via
+// --pii-config.
+//
+// Publishes a new slice so concurrent Redact callers iterating an
+// older snapshot don't race on the per-element Action string (Go
+// strings are not atomic two-word values).
 func (r *Redactor) SetAction(id string, action Action) error {
 	if action != ActionMask && action != ActionBlock && action != ActionRouteLocal {
 		return fmt.Errorf("unknown action %q (must be mask, block, or route_local)", action)
@@ -62,7 +61,9 @@ func (r *Redactor) SetAction(id string, action Action) error {
 	defer r.mu.Unlock()
 	for i := range r.patterns {
 		if r.patterns[i].ID == id {
-			r.patterns[i].Action = action
+			next := slices.Clone(r.patterns)
+			next[i].Action = action
+			r.patterns = next
 			return nil
 		}
 	}

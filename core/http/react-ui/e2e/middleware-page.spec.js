@@ -71,7 +71,7 @@ const MOCK_EVENTS = {
     {
       id: 'proxy_traffic_1', kind: 'proxy_traffic', correlation_id: 'corr-2',
       host: 'api.openai.com',
-      bytes_sent: 412, bytes_received: 1280, status_code: 200, duration_ms: 240,
+      bytes_sent: 412, bytes_received: 1228, status_code: 200, duration_ms: 240,
       created_at: '2026-05-06T10:03:00Z',
     },
   ],

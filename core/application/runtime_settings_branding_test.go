@@ -114,6 +114,17 @@ var _ = Describe("loadRuntimeSettingsFromFile", func() {
 			loadRuntimeSettingsFromFile(cfg)
 			Expect(cfg.MITMListen).To(Equal(":9999"), "CLI flag must win over the persisted file value")
 		})
+
+		// Symmetric with MITMListen above: CLI must win.
+		It("does not override an explicit MITMInterceptHosts CLI flag", func() {
+			cfg := &config.ApplicationConfig{
+				DynamicConfigsDir:  seedSettings(`{"mitm_intercept_hosts": ["api.openai.com"]}`),
+				MITMInterceptHosts: []string{"only-this.example.com"},
+			}
+			loadRuntimeSettingsFromFile(cfg)
+			Expect(cfg.MITMInterceptHosts).To(ConsistOf("only-this.example.com"),
+				"CLI-supplied intercept allowlist must win over the persisted file value")
+		})
 	})
 
 	// The Agent Pool block has a mix of zero and non-zero defaults

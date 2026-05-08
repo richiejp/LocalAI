@@ -90,24 +90,23 @@ func OpenAI() pii.Adapter {
 	}
 }
 
-// encodeIdx packs (message index, content-block index) into a single
-// int. block=-1 encodes "the whole Content string". The packing is
-// {msg<<16 | (blockIdx & 0xFFFF)} which supports up to 65k messages
-// and 32k content blocks per message — far beyond any real chat
-// request.
+// encodeIdx packs (msg, block) into one int. block=-1 means
+// "the whole Content string"; bit 24 is the sentinel flag and
+// bits 0..23 hold the block index, leaving the rest for msg.
+const idxWholeStringFlag = 1 << 24
+const idxBlockMask = (1 << 24) - 1
+
 func encodeIdx(msg, block int) int {
 	if block < 0 {
-		// Use the high bit of the lower half as the sentinel.
-		return (msg << 16) | 0xFFFF
+		return (msg << 25) | idxWholeStringFlag
 	}
-	return (msg << 16) | (block & 0xFFFF)
+	return (msg << 25) | (block & idxBlockMask)
 }
 
 func decodeIdx(packed int) (msg, block int) {
-	low := packed & 0xFFFF
-	msg = packed >> 16
-	if low == 0xFFFF {
+	msg = packed >> 25
+	if packed&idxWholeStringFlag != 0 {
 		return msg, -1
 	}
-	return msg, low
+	return msg, packed & idxBlockMask
 }

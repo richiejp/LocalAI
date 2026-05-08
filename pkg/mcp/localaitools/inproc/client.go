@@ -576,9 +576,11 @@ func (c *Client) GetUsageStats(ctx context.Context, q localaitools.UsageStatsQue
 
 	queryUser := viewerID
 	if q.All {
-		// /api/usage/all: pass empty UserID to the recorder so the
-		// backend returns the cluster-wide view.
-		queryUser = ""
+		// /api/usage/all: cluster-wide by default, but honour the
+		// optional UserID filter so admins can scope to one user —
+		// matches the REST endpoint's ?user_id=… query param. Empty
+		// q.UserID falls through to the cluster-wide aggregate.
+		queryUser = q.UserID
 	}
 
 	rows, err := c.StatsRecorder.Aggregate(ctx, billing.AggregateQuery{

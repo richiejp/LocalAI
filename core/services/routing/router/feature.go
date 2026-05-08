@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"time"
+	"unicode/utf8"
 )
 
 // CandidateRule is the duck-typed view of config.RouterCandidateRule
@@ -49,8 +50,11 @@ func (f *FeatureClassifier) Name() string { return "feature" }
 
 func (f *FeatureClassifier) Classify(_ context.Context, p Probe) (Decision, error) {
 	start := time.Now()
+	// Length predicates use rune counts (operators reason in characters,
+	// not UTF-8 bytes); compute once per request rather than per candidate.
+	runes := utf8.RuneCountInString(p.Prompt)
 	for _, c := range f.candidates {
-		if matches(c.Rule, p) {
+		if matches(c.Rule, p, runes) {
 			return Decision{
 				Label:   c.Label,
 				Score:   1.0,
@@ -65,18 +69,16 @@ func (f *FeatureClassifier) Classify(_ context.Context, p Probe) (Decision, erro
 	return Decision{Latency: time.Since(start)}, fmt.Errorf("no candidate rule matched")
 }
 
-func matches(rule CandidateRule, p Probe) bool {
-	if rule.MaxPromptLength > 0 && len(p.Prompt) > rule.MaxPromptLength {
+func matches(rule CandidateRule, p Probe, runes int) bool {
+	if rule.MaxPromptLength > 0 && runes > rule.MaxPromptLength {
 		return false
 	}
-	if rule.MinPromptLength > 0 && len(p.Prompt) < rule.MinPromptLength {
+	if rule.MinPromptLength > 0 && runes < rule.MinPromptLength {
 		return false
 	}
 	if rule.RequiresCode && !p.HasCode {
 		return false
 	}
-	// All explicit predicates passed. A candidate with no predicates
-	// (the zero rule) is a wildcard that always matches — the
-	// expected "fallback last" pattern.
+	// A candidate with no predicates is a wildcard — put it last.
 	return true
 }

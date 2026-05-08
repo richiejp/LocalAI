@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // StreamFilter applies the regex PII tier to a streaming response,
@@ -119,6 +120,14 @@ func (sf *StreamFilter) Push(text string) string {
 		if span.Start < emitBoundary && span.End > emitBoundary {
 			emitBoundary = span.Start
 		}
+	}
+
+	// holdLen is byte-sized but a chunk boundary may land mid-codepoint.
+	// Snap back to the nearest rune start so neither the emitted prefix
+	// nor the retained tail contains a split codepoint — otherwise the
+	// next regex scan over an invalid-UTF-8 prefix could mis-match.
+	for emitBoundary > 0 && emitBoundary < n && !utf8.RuneStart(bufStr[emitBoundary]) {
+		emitBoundary--
 	}
 
 	if emitBoundary <= 0 {

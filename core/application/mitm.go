@@ -33,12 +33,12 @@ func startMITMLocked(app *Application, options *config.ApplicationConfig) error 
 		caDir = filepath.Join(base, "mitm-ca")
 	}
 
-	if app.mitmCA == nil {
+	if app.mitmCA.Load() == nil {
 		ca, err := mitm.LoadOrCreateCA(caDir)
 		if err != nil {
 			return fmt.Errorf("ca: %w", err)
 		}
-		app.mitmCA = ca
+		app.mitmCA.Store(ca)
 	}
 
 	hosts := options.MITMInterceptHosts
@@ -53,7 +53,7 @@ func startMITMLocked(app *Application, options *config.ApplicationConfig) error 
 
 	srv, err := mitm.NewServer(mitm.Config{
 		Addr:           options.MITMListen,
-		CA:             app.mitmCA,
+		CA:             app.mitmCA.Load(),
 		InterceptHosts: hosts,
 		Handler:        handler,
 		EventStore:     app.piiEvents,
@@ -64,7 +64,7 @@ func startMITMLocked(app *Application, options *config.ApplicationConfig) error 
 	if err := srv.Start(); err != nil {
 		return fmt.Errorf("listen: %w", err)
 	}
-	app.mitmServer = srv
+	app.mitmServer.Store(srv)
 
 	xlog.Info("mitm: cloudproxy listener started",
 		"addr", srv.Addr(),
@@ -96,10 +96,11 @@ func (a *Application) RestartMITM() error {
 }
 
 func stopMITMLocked(a *Application) {
-	if a.mitmServer == nil {
+	srv := a.mitmServer.Load()
+	if srv == nil {
 		return
 	}
-	a.mitmServer.Stop()
-	a.mitmServer = nil
+	srv.Stop()
+	a.mitmServer.Store(nil)
 	xlog.Info("mitm: cloudproxy listener stopped")
 }

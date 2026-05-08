@@ -180,7 +180,7 @@ func (s *Server) handleTunnel(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "mitm: tunnel dial: "+err.Error(), http.StatusBadGateway)
 		return
 	}
-	defer upstream.Close()
+	defer func() { _ = upstream.Close() }()
 
 	hijacker, ok := w.(http.Hijacker)
 	if !ok {
@@ -192,7 +192,7 @@ func (s *Server) handleTunnel(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "mitm: hijack failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	defer clientConn.Close()
+	defer func() { _ = clientConn.Close() }()
 
 	if _, err := clientConn.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n")); err != nil {
 		return
@@ -233,7 +233,7 @@ func (s *Server) handleIntercept(w http.ResponseWriter, r *http.Request, host st
 		http.Error(w, "mitm: hijack failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	defer clientConn.Close()
+	defer func() { _ = clientConn.Close() }()
 
 	if _, err := clientConn.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n")); err != nil {
 		return
@@ -243,17 +243,21 @@ func (s *Server) handleIntercept(w http.ResponseWriter, r *http.Request, host st
 		Certificates: []tls.Certificate{*leaf},
 		NextProtos:   []string{"h2", "http/1.1"},
 	})
-	defer tlsConn.Close()
+	defer func() { _ = tlsConn.Close() }()
 
 	// Deadline applies to the handshake only; cleared before the
-	// request loop so long-running streams don't get cut off.
-	if err := tlsConn.SetDeadline(time.Now().Add(s.connectTimeout)); err == nil {
-		if err := tlsConn.Handshake(); err != nil {
-			xlog.Debug("mitm: TLS handshake failed", "host", host, "error", err)
-			return
-		}
-		_ = tlsConn.SetDeadline(time.Time{})
+	// request loop so long-running streams don't get cut off. Fail
+	// closed if SetDeadline errors — better than handshaking without
+	// a deadline.
+	if err := tlsConn.SetDeadline(time.Now().Add(s.connectTimeout)); err != nil {
+		xlog.Debug("mitm: TLS handshake set-deadline failed", "host", host, "error", err)
+		return
 	}
+	if err := tlsConn.Handshake(); err != nil {
+		xlog.Debug("mitm: TLS handshake failed", "host", host, "error", err)
+		return
+	}
+	_ = tlsConn.SetDeadline(time.Time{})
 
 	handler := http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
 		req.URL.Scheme = "https"

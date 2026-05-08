@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 )
 
 // connResponseWriter is a minimal HTTP/1.1 http.ResponseWriter
@@ -52,15 +53,16 @@ func (w *connResponseWriter) WriteHeader(status int) {
 		w.header.Del("Content-Length")
 	}
 
-	if conn := w.header.Get("Connection"); conn != "" {
-		for _, v := range w.header.Values("Connection") {
-			if v == "close" {
-				w.closeAfter = true
-			}
+	// "Connection: close" is case-insensitive per RFC 9110 §7.6.1; some
+	// upstreams send "Close" or "CLOSE". Use EqualFold so any casing
+	// triggers the post-response disconnect.
+	for _, v := range w.header.Values("Connection") {
+		if strings.EqualFold(v, "close") {
+			w.closeAfter = true
 		}
 	}
 
-	fmt.Fprintf(w.bw, "HTTP/1.1 %d %s\r\n", status, http.StatusText(status))
+	_, _ = fmt.Fprintf(w.bw, "HTTP/1.1 %d %s\r\n", status, http.StatusText(status))
 	_ = w.header.Write(w.bw)
 	_, _ = w.bw.WriteString("\r\n")
 }
