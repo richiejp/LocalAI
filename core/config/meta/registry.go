@@ -386,5 +386,77 @@ func DefaultRegistry() map[string]FieldMetaOverride {
 			Component:   "string-list",
 			Order:       220,
 		},
+
+		// --- Router ---
+		// Routing turns this model config into a dispatcher: the
+		// classifier inspects each incoming request's prompt and
+		// rewrites the served model to one of the listed candidates.
+		// The Routing tab of the middleware admin page surfaces every
+		// model with a router block.
+		"router.classifier": {
+			Section:     "other",
+			Label:       "Router Classifier",
+			Description: "Which classifier picks a candidate. 'feature' = cheap rules (length, code-fence); 'knn' = nearest-exemplar via an embedding model + vector store; 'llm' = ask a small instruct model.",
+			Component:   "select",
+			Options: []FieldOption{
+				{Value: "feature", Label: "Feature (rules)"},
+				{Value: "knn", Label: "KNN (embeddings)"},
+				{Value: "llm", Label: "LLM (small instruct)"},
+			},
+			Order: 230,
+		},
+		"router.fallback": {
+			Section:              "other",
+			Label:                "Router Fallback",
+			Description:          "Model used when the classifier returns no match or the matched label can't be resolved. Empty means classifier failures bubble up as 500 — fail-fast, not silent-bypass.",
+			Component:            "model-select",
+			AutocompleteProvider: ProviderModelsChat,
+			Order:                231,
+		},
+		"router.embedding_model": {
+			Section:              "other",
+			Label:                "Router Embedding Model",
+			Description:          "Embedding model for the KNN classifier — embeds both probe prompts and candidate exemplars. Required when classifier is 'knn'.",
+			Component:            "model-select",
+			AutocompleteProvider: ProviderModels,
+			Order:                232,
+		},
+		"router.store_model": {
+			Section:              "other",
+			Label:                "Router Vector Store",
+			Description:          "Vector-store backend the KNN classifier uses for exemplar embeddings. Empty defaults to the in-process local-store backend; any pluggable vector store (qdrant, pinecone, ...) works the same way. Ignored when classifier != 'knn'.",
+			Component:            "model-select",
+			AutocompleteProvider: ProviderModels,
+			Order:                233,
+		},
+		"router.min_score": {
+			Section:     "other",
+			Label:       "Router Minimum Score",
+			Description: "Cosine-similarity floor for the KNN classifier — best matches below this score fall back. 0 disables the floor.",
+			Component:   "number",
+			Order:       234,
+		},
+		"router.classifier_model": {
+			Section:              "other",
+			Label:                "Router Classifier Model",
+			Description:          "Small instruct model the LLM classifier asks for routing decisions. Required when classifier is 'llm'.",
+			Component:            "model-select",
+			AutocompleteProvider: ProviderModelsChat,
+			Order:                235,
+		},
+		"router.classifier_cache_size": {
+			Section:     "other",
+			Label:       "Router LLM Cache Size",
+			Description: "Bounds the LLM classifier's per-prompt memo cache. 0 disables; default 1024.",
+			Component:   "number",
+			Order:       236,
+		},
+		"router.candidates": {
+			Section:     "other",
+			Label:       "Router Candidates",
+			Description: "Labelled downstream models the classifier can pick. Each entry: { label, model, rules: { ... }, description?, rules.examples? }. The feature classifier reads rules; KNN reads rules.examples; LLM reads description.",
+			Component:   "code-editor",
+			Order:       237,
+		},
 	}
 }

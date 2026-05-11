@@ -105,6 +105,34 @@ const MODEL_TEMPLATES = [
     },
   },
   {
+    id: 'router',
+    label: 'Routing Model',
+    icon: 'fa-route',
+    description: 'Dispatch requests to different downstream models based on prompt features. Pre-seeded with a feature classifier and two candidates — fill in candidate model names and the fallback to make it live.',
+    // router.candidates is pre-seeded with two empty-rule entries so
+    // the editor renders a working candidate list out of the box.
+    // Admins fill in the candidate model names and the fallback;
+    // adjust rules (max_prompt_length / requires_code / etc.) or
+    // switch to "knn" / "llm" classifiers from the editor.
+    fields: {
+      'name': 'smart-router',
+      'router.classifier': 'feature',
+      'router.fallback': '',
+      'router.candidates': [
+        {
+          label: 'code',
+          model: '',
+          rules: { requires_code: true },
+        },
+        {
+          label: 'chat',
+          model: '',
+          rules: {},
+        },
+      ],
+    },
+  },
+  {
     id: 'mitm',
     label: 'MITM Intercept',
     icon: 'fa-shield-halved',

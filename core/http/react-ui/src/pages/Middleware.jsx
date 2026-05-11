@@ -378,6 +378,7 @@ function FilteringTab({ status, pendingPattern, onSetAction, onSetDisabled, onPe
 }
 
 function RoutingTab({ status, decisions }) {
+  const navigate = useNavigate()
   const router = status?.router || { configured: false }
 
   if (!router.configured || !router.models || router.models.length === 0) {
@@ -388,6 +389,13 @@ function RoutingTab({ status, decisions }) {
         <p className="empty-state-text">
           {router.note || 'Add a `router:` block to a model YAML to enable intelligent routing. The classifier picks one of the listed candidates per request and the standard model-resolution path runs against the chosen target.'}
         </p>
+        <button
+          className="btn btn-primary"
+          style={{ marginTop: 'var(--spacing-md)' }}
+          onClick={() => navigate('/app/model-editor?template=router')}
+        >
+          <i className="fas fa-plus" /> Create routing model
+        </button>
       </div>
     )
   }
@@ -398,9 +406,18 @@ function RoutingTab({ status, decisions }) {
       <div className="card" style={{ padding: 'var(--spacing-md)', marginBottom: 'var(--spacing-md)' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 'var(--spacing-sm)' }}>
           <span style={{ fontSize: '0.875rem', fontWeight: 600 }}>Active routers</span>
-          <span style={{ fontSize: '0.6875rem', color: 'var(--color-text-muted)' }}>
-            Edit the router model YAML to change candidates or rules.
-          </span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--spacing-sm)' }}>
+            <span style={{ fontSize: '0.6875rem', color: 'var(--color-text-muted)' }}>
+              Edit the router model YAML to change candidates or rules.
+            </span>
+            <button
+              className="btn btn-secondary btn-sm"
+              onClick={() => navigate('/app/model-editor?template=router')}
+              title="Open the model editor with the Routing Model template pre-selected"
+            >
+              <i className="fas fa-plus" /> Add routing model
+            </button>
+          </div>
         </div>
         <div className="table-container">
           <table className="table">
