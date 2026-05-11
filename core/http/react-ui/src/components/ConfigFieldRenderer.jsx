@@ -5,6 +5,7 @@ import SearchableSelect from './SearchableSelect'
 import SearchableModelSelect from './SearchableModelSelect'
 import AutocompleteInput from './AutocompleteInput'
 import CodeEditor from './CodeEditor'
+import StructuredCodeEditor from './StructuredCodeEditor'
 import PIIPatternListEditor from './PIIPatternListEditor'
 
 // Map autocomplete provider to SearchableModelSelect capability
@@ -301,8 +302,17 @@ export default function ConfigFieldRenderer({ field, value, onChange, onRemove, 
     )
   }
 
-  // Code editor
+  // Code editor. Two flavours:
+  //   - Plain CodeEditor when the form value is a string (Go template
+  //     blobs etc. — what the original `code-editor` shipped for).
+  //   - StructuredCodeEditor when the form value is a structured
+  //     object/array (e.g. `router.candidates`, where the canonical
+  //     value is `[{label, model, rules}, ...]`). The wrapper keeps a
+  //     YAML representation in the textarea while publishing the
+  //     parsed structure back to form state, so the save flow can
+  //     unflatten it into the YAML file cleanly.
   if (component === 'code-editor') {
+    const isStructured = value !== null && value !== undefined && typeof value !== 'string'
     return (
       <div style={{ padding: 'var(--spacing-sm) 0', borderBottom: '1px solid var(--color-border-subtle)' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
@@ -311,7 +321,9 @@ export default function ConfigFieldRenderer({ field, value, onChange, onRemove, 
             <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', marginTop: 2 }}>{description}</div>
           </div>
         </div>
-        <CodeEditor value={value || ''} onChange={handleChange} minHeight="80px" />
+        {isStructured
+          ? <StructuredCodeEditor value={value} onChange={handleChange} minHeight="80px" />
+          : <CodeEditor value={value || ''} onChange={handleChange} minHeight="80px" />}
       </div>
     )
   }
