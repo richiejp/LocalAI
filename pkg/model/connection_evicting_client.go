@@ -113,3 +113,9 @@ func (c *ConnectionEvictingClient) Rerank(ctx context.Context, in *pb.RerankRequ
 	c.checkErr(err)
 	return result, err
 }
+
+func (c *ConnectionEvictingClient) TokenClassify(ctx context.Context, in *pb.TokenClassifyRequest, opts ...ggrpc.CallOption) (*pb.TokenClassifyResponse, error) {
+	result, err := c.Backend.TokenClassify(ctx, in, opts...)
+	c.checkErr(err)
+	return result, err
+}
