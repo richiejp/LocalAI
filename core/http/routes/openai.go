@@ -60,7 +60,14 @@ func RegisterOpenAIRoutes(app *echo.Echo,
 			application.RouterDecisions(),
 			application.FallbackUser(),
 			middleware.OpenAIProbe,
+			application.EmbedderFactory(),
+			application.LLMCallerFactory(),
 		),
+		// Admission control runs after RouteModel so the SERVED
+		// model's limits apply — a router fanout that lands on a
+		// saturated downstream gets rejected even when the requested
+		// router-model has slack.
+		middleware.AdmissionControl(application.AdmissionLimiter(), application.PIIEvents()),
 		// PII redaction runs INNERMOST, after RouteModel has resolved
 		// the actual served model. This is what makes per-model PII
 		// configs honour the routed target (e.g., a router fans out to

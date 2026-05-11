@@ -40,11 +40,13 @@ func RegisterMiddlewareRoutes(e *echo.Echo, app *application.Application) {
 		piiSection := buildPIIStatus(app)
 		routerSection := buildRouterStatus(app)
 		mitmSection := buildMITMStatus(app)
+		admissionSection := buildAdmissionStatus(app)
 
 		return c.JSON(http.StatusOK, map[string]any{
-			"pii":    piiSection,
-			"router": routerSection,
-			"mitm":   mitmSection,
+			"pii":       piiSection,
+			"router":    routerSection,
+			"mitm":      mitmSection,
+			"admission": admissionSection,
 		})
 	})
 
@@ -202,6 +204,30 @@ func buildMITMStatus(app *application.Application) map[string]any {
 		out["ca_cert_url"] = "/api/middleware/proxy-ca.crt"
 	}
 	return out
+}
+
+// buildAdmissionStatus reports each model's MaxConcurrent ceiling
+// and current in-flight count. Models with no limit set are
+// omitted — the dashboard view is "what's gated", not "every
+// model in the loader".
+func buildAdmissionStatus(app *application.Application) map[string]any {
+	limiter := app.AdmissionLimiter()
+	models := []map[string]any{}
+	if limiter == nil {
+		return map[string]any{"models": models}
+	}
+	for _, cfg := range app.ModelConfigLoader().GetAllModelsConfigs() {
+		if cfg.Limits.MaxConcurrent <= 0 {
+			continue
+		}
+		models = append(models, map[string]any{
+			"name":                cfg.Name,
+			"max_concurrent":      cfg.Limits.MaxConcurrent,
+			"retry_after_seconds": cfg.Limits.RetryAfterSeconds,
+			"in_flight":           limiter.InFlight(cfg.Name),
+		})
+	}
+	return map[string]any{"models": models}
 }
 
 // buildPIIStatus builds the pii section of /api/middleware/status. It

@@ -46,7 +46,7 @@ func NewFeatureClassifier(candidates []FeatureCandidate) *FeatureClassifier {
 	return &FeatureClassifier{candidates: candidates}
 }
 
-func (f *FeatureClassifier) Name() string { return "feature" }
+func (f *FeatureClassifier) Name() string { return ClassifierFeature }
 
 func (f *FeatureClassifier) Classify(_ context.Context, p Probe) (Decision, error) {
 	start := time.Now()

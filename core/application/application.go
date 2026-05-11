@@ -16,6 +16,7 @@ import (
 	"github.com/mudler/LocalAI/core/services/galleryop"
 	"github.com/mudler/LocalAI/core/services/monitoring"
 	"github.com/mudler/LocalAI/core/services/nodes"
+	"github.com/mudler/LocalAI/core/services/routing/admission"
 	"github.com/mudler/LocalAI/core/services/routing/billing"
 	"github.com/mudler/LocalAI/core/services/cloudproxy/mitm"
 	"github.com/mudler/LocalAI/core/services/routing/pii"
@@ -71,6 +72,7 @@ type Application struct {
 	// /api/middleware/status so the admin UI can surface the cause.
 	mitmHostConflicts atomic.Pointer[map[string][]string]
 	routerDecisions    router.DecisionStore
+	admissionLimiter   *admission.Limiter
 	watchdogMutex      sync.Mutex
 	watchdogStop       chan bool
 	p2pMutex           sync.Mutex
@@ -284,6 +286,14 @@ func (a *Application) MITMHostOwners() map[string]string {
 // log write in that case but still rewrites requests.
 func (a *Application) RouterDecisions() router.DecisionStore {
 	return a.routerDecisions
+}
+
+// AdmissionLimiter returns the per-model admission limiter. The
+// admission middleware uses it to gate concurrent requests; the
+// admin status surface reads InFlight/Capacity from it for live
+// load visibility.
+func (a *Application) AdmissionLimiter() *admission.Limiter {
+	return a.admissionLimiter
 }
 
 // StartupConfig returns the original startup configuration (from env vars, before file loading)

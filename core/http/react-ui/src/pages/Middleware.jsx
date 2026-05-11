@@ -726,6 +726,7 @@ const EVENT_KINDS = [
   { id: 'pii', label: 'PII' },
   { id: 'proxy_connect', label: 'Proxy connect' },
   { id: 'proxy_traffic', label: 'Proxy traffic' },
+  { id: 'admission', label: 'Admission' },
 ]
 
 function eventKind(e) {
@@ -736,6 +737,7 @@ function eventSubject(e) {
   switch (eventKind(e)) {
     case 'proxy_connect':
     case 'proxy_traffic':
+    case 'admission':
       return e.host || '—'
     default:
       return e.pattern_id || '—'
@@ -752,6 +754,10 @@ function eventDetails(e) {
       const recv = formatBytes(e.bytes_received)
       const dur = e.duration_ms != null ? `${e.duration_ms}ms` : ''
       return `${status} · ↑${sent} ↓${recv} · ${dur}`
+    }
+    case 'admission': {
+      const retry = e.duration_ms != null ? `retry-after ${Math.round(e.duration_ms / 1000)}s` : ''
+      return `HTTP 503 rejected · ${retry}`
     }
     default: {
       const len = e.length != null ? `len ${e.length}` : ''
@@ -773,6 +779,7 @@ function kindBadge(kind) {
     pii: 'var(--color-warning)',
     proxy_connect: 'var(--color-primary)',
     proxy_traffic: 'var(--color-text-muted)',
+    admission: 'var(--color-error)',
   }
   return (
     <span style={{

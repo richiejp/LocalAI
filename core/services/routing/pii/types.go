@@ -122,6 +122,13 @@ const (
 	KindPII          EventKind = "pii"
 	KindProxyConnect EventKind = "proxy_connect"
 	KindProxyTraffic EventKind = "proxy_traffic"
+	// KindAdmission rows are written by the admission middleware
+	// (routing subsystem 5) when a request is rejected because a
+	// model's MaxConcurrent ceiling is full. The Host field carries
+	// the model name (overloading the existing column rather than
+	// adding a new one — admins read it as "the thing that was
+	// busy"); StatusCode is 503.
+	KindAdmission EventKind = "admission"
 )
 
 // PIIEvent is the persisted record. The Hash field is the first 8 chars

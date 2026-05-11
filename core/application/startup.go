@@ -17,6 +17,7 @@ import (
 	"github.com/mudler/LocalAI/core/services/jobs"
 	"github.com/mudler/LocalAI/core/services/monitoring"
 	"github.com/mudler/LocalAI/core/services/nodes"
+	"github.com/mudler/LocalAI/core/services/routing/admission"
 	"github.com/mudler/LocalAI/core/services/routing/billing"
 	"github.com/mudler/LocalAI/core/services/routing/pii"
 	"github.com/mudler/LocalAI/core/services/routing/router"
@@ -224,10 +225,15 @@ func New(opts ...config.AppOption) (*Application, error) {
 
 	// Wire the routing decision log. Always-on when stats are enabled —
 	// the per-router admin page reads this as the live activity feed
-	// and as input to drift checks once subsystem 5 (admission) lands.
+	// and as input to drift checks for subsystem 5.
 	if !options.DisableStats {
 		application.routerDecisions = router.NewMemoryDecisionStore(0)
 	}
+
+	// Subsystem 5: admission control. Limiter is always wired so a
+	// model that gains a limits: block via gallery install or YAML
+	// edit takes effect on the next restart without conditional plumbing.
+	application.admissionLimiter = admission.New()
 
 	// Wire JobStore for DB-backed task/job persistence whenever auth DB is available.
 	// This ensures tasks and jobs survive restarts in both single-node and distributed modes.

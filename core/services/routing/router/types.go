@@ -64,3 +64,24 @@ type Classifier interface {
 	// decision when more than one is configured across models.
 	Name() string
 }
+
+// Classifier names. Single source of truth for the YAML
+// classifier: field, the buildClassifier dispatch in the
+// middleware, and the strings each Classifier returns from Name().
+const (
+	ClassifierFeature = "feature"
+	ClassifierKNN     = "knn"
+	ClassifierLLM     = "llm"
+)
+
+// LabelFallback is the synthetic label written to the decision
+// store when the middleware uses cfg.Router.Fallback rather than a
+// classifier-picked candidate.
+const LabelFallback = "fallback"
+
+// errDecision packages an error with a populated Latency so each
+// classifier's Classify can return early without restating the
+// `Decision{Latency: time.Since(start)}, err` pattern.
+func errDecision(start time.Time, err error) (Decision, error) {
+	return Decision{Latency: time.Since(start)}, err
+}

@@ -101,6 +101,27 @@ type ModelConfig struct {
 	Router RouterConfig `yaml:"router,omitempty" json:"router,omitempty"`
 	Proxy  ProxyConfig  `yaml:"proxy,omitempty" json:"proxy,omitempty"`
 	MITM   MITMModelConfig `yaml:"mitm,omitempty" json:"mitm,omitempty"`
+	Limits LimitsConfig    `yaml:"limits,omitempty" json:"limits,omitempty"`
+}
+
+// @Description Admission-control limits applied per request. The
+// admission middleware enforces these before invoking the handler;
+// requests that exceed a limit get 503 with a Retry-After hint so
+// clients back off rather than pile on. Per-model so cloud passthroughs
+// can have a stricter ceiling than local models.
+type LimitsConfig struct {
+	// MaxConcurrent caps simultaneous in-flight requests for this
+	// model. 0 = unlimited (default). Useful for cloud-passthrough
+	// configs where the upstream rate-limits aggressively, or for
+	// local backends whose memory budget tops out before LocalAI's
+	// queue depth would.
+	MaxConcurrent int `yaml:"max_concurrent,omitempty" json:"max_concurrent,omitempty"`
+
+	// RetryAfterSeconds advises clients how long to wait before
+	// retrying when admission rejects. 0 defaults to 1s — enough to
+	// let an in-flight request finish on a busy local model. The
+	// value is sent verbatim in the Retry-After response header.
+	RetryAfterSeconds int `yaml:"retry_after_seconds,omitempty" json:"retry_after_seconds,omitempty"`
 }
 
 // @Description MITM intercept binding for the model. When the cloudproxy
@@ -192,16 +213,42 @@ type RouterConfig struct {
 	// or the matched label can't be resolved. Empty fallback means
 	// router failures bubble up as 500 — fail-fast, not silent-bypass.
 	Fallback string `yaml:"fallback,omitempty" json:"fallback,omitempty"`
+
+	// EmbeddingModel names the model the KNN classifier uses to
+	// embed both probe prompts and candidate exemplars. Required
+	// when classifier is "knn"; ignored otherwise. The model must
+	// be a callable embeddings model (FLAG_EMBEDDINGS).
+	EmbeddingModel string `yaml:"embedding_model,omitempty" json:"embedding_model,omitempty"`
+
+	// MinScore is the cosine-similarity floor below which the KNN
+	// classifier returns no-match — the surrounding middleware
+	// then falls back. 0 disables the floor (every nearest
+	// exemplar wins regardless of similarity).
+	MinScore float64 `yaml:"min_score,omitempty" json:"min_score,omitempty"`
+
+	// ClassifierModel names the LLM the "llm" classifier asks for
+	// the routing decision. Required when classifier is "llm";
+	// ignored otherwise. Should be a small, fast instruct model.
+	ClassifierModel string `yaml:"classifier_model,omitempty" json:"classifier_model,omitempty"`
+
+	// ClassifierCacheSize bounds the LLM classifier's per-prompt
+	// memo cache. 0 disables the cache (every probe pays the LLM
+	// round-trip). Default 1024 when classifier is "llm".
+	ClassifierCacheSize int `yaml:"classifier_cache_size,omitempty" json:"classifier_cache_size,omitempty"`
 }
 
 // RouterCandidate names a downstream model the classifier can pick.
 // Rules is the classifier-specific selector — the feature classifier
-// reads MaxLength / RequiresCode etc.; future classifiers (knn, llm)
-// ignore it.
+// reads MaxLength / RequiresCode etc.; the KNN classifier reads
+// Examples; the LLM classifier reads Description.
 type RouterCandidate struct {
 	Label string             `yaml:"label" json:"label"`
 	Model string             `yaml:"model" json:"model"`
 	Rules RouterCandidateRule `yaml:"rules,omitempty" json:"rules,omitempty"`
+	// Description is the natural-language hint the LLM classifier
+	// shows alongside this label when asking the small LLM to pick.
+	// Ignored by the feature and KNN classifiers.
+	Description string `yaml:"description,omitempty" json:"description,omitempty"`
 }
 
 // RouterCandidateRule is the union of selectors the feature classifier
@@ -224,6 +271,13 @@ type RouterCandidateRule struct {
 	// backtick code fence. Useful for routing code-heavy chats to a
 	// stronger model.
 	RequiresCode bool `yaml:"requires_code,omitempty" json:"requires_code,omitempty"`
+
+	// Examples is the exemplar set the KNN classifier uses for this
+	// candidate's label — short prompts that should route to this
+	// candidate. Ignored by the feature classifier. The KNN
+	// classifier embeds every example at startup and picks the
+	// candidate whose nearest exemplar matches the probe.
+	Examples []string `yaml:"examples,omitempty" json:"examples,omitempty"`
 }
 
 // HasRouter returns true when the model declares a router config with

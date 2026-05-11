@@ -64,19 +64,7 @@ var _ = Describe("RouteModel middleware", func() {
 	// the parsed request after rewrite so callers can assert on the
 	// model-name swap.
 	runMiddleware := func(routerCfg *config.ModelConfig, parsed any, store router.DecisionStore, extractor ProbeExtractor) (*httptest.ResponseRecorder, error) {
-		mw := RouteModel(loader, appConfig, store, nil, extractor)
-		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader("{}"))
-		rec := httptest.NewRecorder()
-		c := echo.New().NewContext(req, rec)
-		c.Set(CONTEXT_LOCALS_KEY_MODEL_CONFIG, routerCfg)
-		if parsed != nil {
-			c.Set(CONTEXT_LOCALS_KEY_LOCALAI_REQUEST, parsed)
-		}
-		err := mw(func(c echo.Context) error {
-			c.String(http.StatusOK, "ok")
-			return nil
-		})(c)
-		return rec, err
+		return runMiddlewareWithFactories(loader, appConfig, store, extractor, nil, nil, routerCfg, parsed)
 	}
 
 	Describe("classifier success path", func() {
@@ -306,6 +294,150 @@ router:
 			Expect(rec.Code).To(Equal(http.StatusOK))
 			Expect(parsed.Model).To(Equal("qwen-3b"))
 		})
+	})
+})
+
+// runMiddlewareWithFactories is the explicit-deps variant of
+// runMiddleware. The KNN/LLM specs need to inject stub embedder
+// and LLM-caller factories; the closure form was getting unwieldy
+// once those parameters joined.
+func runMiddlewareWithFactories(loader *config.ModelConfigLoader, appConfig *config.ApplicationConfig, store router.DecisionStore, extractor ProbeExtractor, embedFactory EmbedderFactory, llmFactory LLMCallerFactory, routerCfg *config.ModelConfig, parsed any) (*httptest.ResponseRecorder, error) {
+	mw := RouteModel(loader, appConfig, store, nil, extractor, embedFactory, llmFactory)
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader("{}"))
+	rec := httptest.NewRecorder()
+	c := echo.New().NewContext(req, rec)
+	c.Set(CONTEXT_LOCALS_KEY_MODEL_CONFIG, routerCfg)
+	if parsed != nil {
+		c.Set(CONTEXT_LOCALS_KEY_LOCALAI_REQUEST, parsed)
+	}
+	err := mw(func(c echo.Context) error {
+		c.String(http.StatusOK, "ok")
+		return nil
+	})(c)
+	return rec, err
+}
+
+// stubKNNEmbedder maps text → vector by substring match. Mirrors the
+// router-package stub but lives here because middleware_test is in
+// a different package.
+type stubKNNEmbedder struct {
+	mappings map[string][]float32
+}
+
+func (s *stubKNNEmbedder) Embed(_ context.Context, text string) ([]float32, error) {
+	for needle, vec := range s.mappings {
+		if strings.Contains(text, needle) {
+			out := make([]float32, len(vec))
+			copy(out, vec)
+			return out, nil
+		}
+	}
+	return []float32{0, 0, 1}, nil
+}
+
+var _ = Describe("RouteModel KNN classifier integration", func() {
+	// Pins the KNN branch end-to-end: the middleware builds a KNN
+	// classifier from the YAML config, the embedder factory wires
+	// in a stub, the classifier picks the matching label, and the
+	// model swap + decision-store record happen as for the
+	// feature classifier. Without this, the only KNN coverage was
+	// the in-package router unit tests — leaving buildClassifier's
+	// "knn" arm unverified end-to-end.
+	var (
+		modelDir  string
+		appConfig *config.ApplicationConfig
+		loader    *config.ModelConfigLoader
+	)
+	writeYAML := func(name, body string) *config.ModelConfig {
+		path := filepath.Join(modelDir, name+".yaml")
+		Expect(os.WriteFile(path, []byte(body), 0o644)).To(Succeed())
+		Expect(loader.ReadModelConfig(path)).To(Succeed())
+		cfg, err := loader.LoadModelConfigFileByNameDefaultOptions(name, appConfig)
+		Expect(err).ToNot(HaveOccurred())
+		return cfg
+	}
+
+	BeforeEach(func() {
+		var err error
+		modelDir, err = os.MkdirTemp("", "knn-route-test-*")
+		Expect(err).ToNot(HaveOccurred())
+		appConfig = &config.ApplicationConfig{
+			SystemState: &system.SystemState{Model: system.Model{ModelsPath: modelDir}},
+		}
+		loader = config.NewModelConfigLoader(modelDir)
+	})
+	AfterEach(func() { os.RemoveAll(modelDir) })
+
+	It("rewrites the model based on nearest exemplar and records the decision", func() {
+		writeYAML("qwen-coder", "name: qwen-coder\nbackend: llama-cpp\n")
+		writeYAML("qwen-chat", "name: qwen-chat\nbackend: llama-cpp\n")
+		// embedding-anchor stub config so the loader can resolve it
+		// when buildClassifier asks the factory.
+		writeYAML("text-embedding", "name: text-embedding\nbackend: llama-cpp\n")
+
+		routerCfg := writeYAML("smart-router", `name: smart-router
+backend: llama-cpp
+router:
+  classifier: knn
+  embedding_model: text-embedding
+  candidates:
+    - label: code
+      model: qwen-coder
+      rules:
+        examples:
+          - "fix the bug in this function"
+    - label: chat
+      model: qwen-chat
+      rules:
+        examples:
+          - "hello there"
+`)
+		embedFactory := func(name string) router.Embedder {
+			return &stubKNNEmbedder{mappings: map[string][]float32{
+				"bug":   {1, 0, 0},
+				"fix":   {1, 0, 0},
+				"hello": {0, 1, 0},
+				"there": {0, 1, 0},
+			}}
+		}
+		parsed := &schema.OpenAIRequest{}
+		parsed.Model = "smart-router"
+		parsed.Messages = []schema.Message{{Role: "user", Content: "fix this bug please"}}
+
+		store := router.NewMemoryDecisionStore(10)
+		rec, err := runMiddlewareWithFactories(loader, appConfig, store, OpenAIProbe, embedFactory, nil, routerCfg, parsed)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(rec.Code).To(Equal(http.StatusOK))
+		Expect(parsed.Model).To(Equal("qwen-coder"), "KNN should route bug-fix to coder via nearest exemplar")
+
+		decisions, _ := store.List(req(), router.DecisionListQuery{Limit: 10})
+		Expect(decisions).To(HaveLen(1))
+		Expect(decisions[0].Classifier).To(Equal(router.ClassifierKNN))
+		Expect(decisions[0].Label).To(Equal("code"))
+		Expect(decisions[0].ServedModel).To(Equal("qwen-coder"))
+	})
+
+	It("falls back when embedding_model is missing", func() {
+		writeYAML("qwen-fb", "name: qwen-fb\nbackend: llama-cpp\n")
+		routerCfg := writeYAML("smart-router", `name: smart-router
+backend: llama-cpp
+router:
+  classifier: knn
+  candidates:
+    - label: code
+      model: qwen-fb
+      rules:
+        examples: ["x"]
+  fallback: qwen-fb
+`)
+		parsed := &schema.OpenAIRequest{}
+		parsed.Model = "smart-router"
+		parsed.Messages = []schema.Message{{Role: "user", Content: "anything"}}
+
+		// nil EmbedderFactory mimics --disable-stats / no embedding wiring.
+		_, err := runMiddlewareWithFactories(loader, appConfig, nil, OpenAIProbe, nil, nil, routerCfg, parsed)
+		Expect(err).ToNot(HaveOccurred(), "should gracefully fall back rather than 503")
+		Expect(parsed.Model).To(Equal("qwen-fb"))
 	})
 })
 

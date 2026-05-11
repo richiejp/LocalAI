@@ -53,7 +53,10 @@ func RegisterAnthropicRoutes(app *echo.Echo,
 			application.RouterDecisions(),
 			application.FallbackUser(),
 			middleware.AnthropicProbe,
+			application.EmbedderFactory(),
+			application.LLMCallerFactory(),
 		),
+		middleware.AdmissionControl(application.AdmissionLimiter(), application.PIIEvents()),
 		pii.RequestMiddleware(application.PIIRedactor(), application.PIIEvents(), piiadapter.Anthropic(), application.FallbackUser()),
 	}
 

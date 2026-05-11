@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -14,6 +16,18 @@ import (
 	"github.com/mudler/LocalAI/core/services/routing/router"
 	"github.com/mudler/xlog"
 )
+
+// EmbedderFactory returns an Embedder bound to a named embedding
+// model. The router package owns no model loader; the application
+// wiring supplies a factory that calls into core/backend, keeping
+// the router import-free of HTTP/backend dependencies. Factories
+// may return nil for unknown models — the KNN classifier surfaces
+// that as a config error.
+type EmbedderFactory func(modelName string) router.Embedder
+
+// LLMCallerFactory mirrors EmbedderFactory for the LLM classifier:
+// returns a router.LLMCaller bound to a named instruct model.
+type LLMCallerFactory func(modelName string) router.LLMCaller
 
 // ProbeExtractor pulls the prompt content out of a parsed request so
 // the classifier can inspect it without taking a dependency on the
@@ -51,7 +65,13 @@ type ProbeExtractor func(parsed any) (router.Probe, bool)
 // Composition with SmartRouter (distributed mode): this middleware
 // only does *model* selection. Node selection still happens in
 // SmartRouter.Route() downstream of this middleware.
-func RouteModel(loader *config.ModelConfigLoader, appConfig *config.ApplicationConfig, store router.DecisionStore, fallbackUser *auth.User, extractor ProbeExtractor) echo.MiddlewareFunc {
+func RouteModel(loader *config.ModelConfigLoader, appConfig *config.ApplicationConfig, store router.DecisionStore, fallbackUser *auth.User, extractor ProbeExtractor, embedderFactory EmbedderFactory, llmFactory LLMCallerFactory) echo.MiddlewareFunc {
+	// Per-router-model classifier cache. KNN classifiers embed every
+	// exemplar on first Classify; without the cache that work
+	// repeats on every routed request. Keyed by router model name
+	// because the same RouterConfig content under a different model
+	// is conceptually a different classifier.
+	var classifiers sync.Map
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
 			cfg, ok := c.Get(CONTEXT_LOCALS_KEY_MODEL_CONFIG).(*config.ModelConfig)
@@ -69,14 +89,14 @@ func RouteModel(loader *config.ModelConfigLoader, appConfig *config.ApplicationC
 				return next(c)
 			}
 
-			classifier, classifierErr := buildClassifier(cfg.Router)
+			classifier, classifierErr := getOrBuildClassifier(&classifiers, cfg.Name, cfg.Router, embedderFactory, llmFactory)
 			if classifierErr != nil {
 				xlog.Warn("router: unsupported classifier — falling back",
 					"router_model", cfg.Name, "classifier", cfg.Router.Classifier, "error", classifierErr)
 				if cfg.Router.Fallback == "" {
 					return echo.NewHTTPError(503, "router classifier unavailable and no fallback configured")
 				}
-				return rewriteRequest(c, parsed, cfg, cfg.Router.Fallback, "fallback", router.Decision{Label: "fallback"}, "fallback", store, fallbackUser, loader, appConfig, next)
+				return rewriteRequest(c, parsed, cfg, cfg.Router.Fallback, router.LabelFallback, router.Decision{Label: router.LabelFallback}, router.LabelFallback, store, fallbackUser, loader, appConfig, next)
 			}
 
 			start := time.Now()
@@ -87,7 +107,7 @@ func RouteModel(loader *config.ModelConfigLoader, appConfig *config.ApplicationC
 				if cfg.Router.Fallback == "" {
 					return echo.NewHTTPError(503, "router classification failed: "+err.Error())
 				}
-				return rewriteRequest(c, parsed, cfg, cfg.Router.Fallback, "fallback", router.Decision{Label: "fallback", Latency: time.Since(start)}, classifier.Name(), store, fallbackUser, loader, appConfig, next)
+				return rewriteRequest(c, parsed, cfg, cfg.Router.Fallback, router.LabelFallback, router.Decision{Label: router.LabelFallback, Latency: time.Since(start)}, classifier.Name(), store, fallbackUser, loader, appConfig, next)
 			}
 
 			candidate := matchCandidate(cfg.Router.Candidates, decision.Label)
@@ -165,12 +185,23 @@ func rewriteRequest(c echo.Context, parsed any, routerCfg *config.ModelConfig, c
 	return next(c)
 }
 
-func buildClassifier(rc config.RouterConfig) (router.Classifier, error) {
+func getOrBuildClassifier(cache *sync.Map, routerModel string, rc config.RouterConfig, embedderFactory EmbedderFactory, llmFactory LLMCallerFactory) (router.Classifier, error) {
+	if cached, ok := cache.Load(routerModel); ok {
+		return cached.(router.Classifier), nil
+	}
+	c, err := buildClassifier(rc, embedderFactory, llmFactory)
+	if err != nil {
+		return nil, err
+	}
+	// LoadOrStore handles the rare race where two requests for the
+	// same router fire before the first cache write.
+	actual, _ := cache.LoadOrStore(routerModel, c)
+	return actual.(router.Classifier), nil
+}
+
+func buildClassifier(rc config.RouterConfig, embedderFactory EmbedderFactory, llmFactory LLMCallerFactory) (router.Classifier, error) {
 	switch rc.Classifier {
-	case "", "feature":
-		// Empty defaults to "feature" — the only shipped classifier in
-		// this slice. KNN/LLM land in follow-ups behind the same
-		// interface; the YAML field already accepts those values.
+	case "", router.ClassifierFeature:
 		cands := make([]router.FeatureCandidate, 0, len(rc.Candidates))
 		for _, c := range rc.Candidates {
 			cands = append(cands, router.FeatureCandidate{
@@ -186,6 +217,60 @@ func buildClassifier(rc config.RouterConfig) (router.Classifier, error) {
 			return nil, errClassifierUnavailable
 		}
 		return router.NewFeatureClassifier(cands), nil
+	case router.ClassifierKNN:
+		if rc.EmbeddingModel == "" {
+			return nil, fmt.Errorf("router classifier knn requires embedding_model")
+		}
+		if embedderFactory == nil {
+			return nil, fmt.Errorf("router classifier knn unavailable: no embedder factory wired")
+		}
+		embedder := embedderFactory(rc.EmbeddingModel)
+		if embedder == nil {
+			return nil, fmt.Errorf("router classifier knn: embedding_model %q not loadable", rc.EmbeddingModel)
+		}
+		cands := make([]router.KNNCandidate, 0, len(rc.Candidates))
+		for _, c := range rc.Candidates {
+			if len(c.Rules.Examples) == 0 {
+				return nil, fmt.Errorf("router classifier knn: candidate %q has no examples", c.Label)
+			}
+			cands = append(cands, router.KNNCandidate{
+				Label:    c.Label,
+				Examples: c.Rules.Examples,
+			})
+		}
+		if len(cands) == 0 {
+			return nil, errClassifierUnavailable
+		}
+		return router.NewKNNClassifier(cands, embedder, float32(rc.MinScore)), nil
+	case router.ClassifierLLM:
+		if rc.ClassifierModel == "" {
+			return nil, fmt.Errorf("router classifier llm requires classifier_model")
+		}
+		if llmFactory == nil {
+			return nil, fmt.Errorf("router classifier llm unavailable: no LLM caller factory wired")
+		}
+		caller := llmFactory(rc.ClassifierModel)
+		if caller == nil {
+			return nil, fmt.Errorf("router classifier llm: classifier_model %q not loadable", rc.ClassifierModel)
+		}
+		cands := make([]router.LLMCandidate, 0, len(rc.Candidates))
+		for _, c := range rc.Candidates {
+			if c.Description == "" {
+				return nil, fmt.Errorf("router classifier llm: candidate %q has no description", c.Label)
+			}
+			cands = append(cands, router.LLMCandidate{
+				Label:       c.Label,
+				Description: c.Description,
+			})
+		}
+		if len(cands) == 0 {
+			return nil, errClassifierUnavailable
+		}
+		cacheCap := rc.ClassifierCacheSize
+		if cacheCap == 0 {
+			cacheCap = 1024
+		}
+		return router.NewLLMClassifier(cands, caller, cacheCap), nil
 	default:
 		return nil, errClassifierUnavailable
 	}
