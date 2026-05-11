@@ -10,6 +10,7 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/mudler/LocalAI/core/backend"
 	"github.com/mudler/LocalAI/core/config"
+	"github.com/mudler/LocalAI/core/http/auth"
 	mcpTools "github.com/mudler/LocalAI/core/http/endpoints/mcp"
 	"github.com/mudler/LocalAI/core/http/middleware"
 	"github.com/mudler/LocalAI/core/schema"
@@ -999,7 +1000,7 @@ func ChatEndpoint(cl *config.ModelConfigLoader, ml *model.ModelLoader, evaluator
 							Object: "chat.completion.chunk",
 						}
 						if drainBytes, err := json.Marshal(drainResp); err == nil {
-							fmt.Fprintf(c.Response().Writer, "data: %s\n\n", drainBytes)
+							_, _ = fmt.Fprintf(c.Response().Writer, "data: %s\n\n", drainBytes)
 							c.Response().Flush()
 						}
 					}
