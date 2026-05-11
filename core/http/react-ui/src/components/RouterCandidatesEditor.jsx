@@ -169,20 +169,8 @@ function CandidateRow({ row, onChange, onRemove }) {
             />
           </FieldLabel>
 
-          <FieldLabel label="Examples (KNN)" hint="One exemplar prompt per line. The KNN classifier embeds these and picks the candidate whose nearest example is closest to the request.">
-            <textarea
-              className="input"
-              rows={3}
-              placeholder={'one example per line, e.g.\nfix the bug in this function\nrefactor this code'}
-              value={examples.join('\n')}
-              onChange={(e) => setExamples(
-                e.target.value
-                  .split('\n')
-                  .map((s) => s.trim())
-                  .filter(Boolean)
-              )}
-              style={{ width: '100%', fontFamily: 'var(--font-mono)', fontSize: '0.75rem', resize: 'vertical' }}
-            />
+          <FieldLabel label="Examples (KNN)" hint="Each exemplar is one prompt the KNN classifier embeds and matches against incoming requests. Paste a representative prompt per row — newlines inside a prompt are preserved.">
+            <ExamplesEditor value={examples} onChange={setExamples} />
           </FieldLabel>
         </div>
       </details>
@@ -196,6 +184,70 @@ function FieldLabel({ label, hint, children }) {
       <div style={{ fontSize: '0.75rem', fontWeight: 500 }}>{label}</div>
       {hint && <div style={{ fontSize: '0.6875rem', color: 'var(--color-text-muted)' }}>{hint}</div>}
       {children}
+    </div>
+  )
+}
+
+// ExamplesEditor renders one resizable textarea per exemplar. The
+// previous shape was a single textarea with "one per line"
+// semantics, which broke for any exemplar that itself contained a
+// newline — a realistic case for multi-line prompts admins want to
+// paste in verbatim. One textarea per item lets each exemplar hold
+// arbitrary text including line breaks, and the array on the wire
+// stays a plain []string the KNN classifier already consumes.
+function ExamplesEditor({ value, onChange }) {
+  const items = Array.isArray(value) ? value : []
+
+  const update = (index, text) =>
+    onChange(items.map((it, i) => (i === index ? text : it)))
+
+  const remove = (index) =>
+    onChange(items.filter((_, i) => i !== index))
+
+  const add = () => onChange([...items, ''])
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--spacing-xs)' }}>
+      {items.length === 0 && (
+        <div style={{ fontSize: '0.6875rem', color: 'var(--color-text-muted)' }}>
+          No exemplars yet. Add at least one — the KNN classifier needs exemplars to embed.
+        </div>
+      )}
+      {items.map((text, i) => (
+        <div key={i} style={{ display: 'flex', gap: 6, alignItems: 'flex-start' }}>
+          <textarea
+            className="input"
+            rows={3}
+            placeholder="paste a representative prompt..."
+            value={text}
+            onChange={(e) => update(i, e.target.value)}
+            style={{
+              flex: 1,
+              fontFamily: 'var(--font-mono)',
+              fontSize: '0.75rem',
+              resize: 'vertical',
+              minHeight: '4em',
+            }}
+          />
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm"
+            onClick={() => remove(i)}
+            title="Remove exemplar"
+            style={{ flexShrink: 0 }}
+          >
+            <i className="fas fa-trash" />
+          </button>
+        </div>
+      ))}
+      <button
+        type="button"
+        className="btn btn-secondary btn-sm"
+        onClick={add}
+        style={{ alignSelf: 'flex-start' }}
+      >
+        <i className="fas fa-plus" /> Add exemplar
+      </button>
     </div>
   )
 }
