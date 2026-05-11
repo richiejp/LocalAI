@@ -1,6 +1,7 @@
 package pii
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -9,6 +10,16 @@ import (
 	"strings"
 	"sync"
 )
+
+// rawHit is one detection — regex-side or NER-side — before
+// overlap-merging. Lifted to file scope so the regex and NER
+// collectors can both produce them and feed the same merge/emit step.
+type rawHit struct {
+	patternID string
+	action    Action
+	start     int
+	end       int
+}
 
 // Redactor scans text against a configured pattern set and applies the
 // per-pattern action. The pattern set itself is mutable at runtime via
@@ -109,22 +120,60 @@ func (r *Redactor) Redact(text string) Result {
 // Spans are returned in the original input's coordinate system so the
 // PIIEvent record can be written without re-running the scan.
 func (r *Redactor) RedactWithOverrides(text string, overrides map[string]Action) Result {
+	return r.redact(context.Background(), text, overrides, NERConfig{})
+}
+
+// RedactWithNER is the encoder-tier variant: runs both the regex tier
+// (with per-pattern overrides) and the NER tier, merges hits, and
+// emits one redacted output. A nil NERConfig.Detector skips the NER
+// pass — callers can hand the same path the same NERConfig{} whether
+// or not the model has NER configured.
+//
+// Errors from the NER detector are returned alongside a best-effort
+// regex-only Result so the caller can decide whether to fail open
+// (return the regex Result, log the error) or fail closed (refuse the
+// request). The regex tier never errors.
+func (r *Redactor) RedactWithNER(ctx context.Context, text string, overrides map[string]Action, nerCfg NERConfig) (Result, error) {
+	if nerCfg.Detector == nil {
+		return r.redact(ctx, text, overrides, nerCfg), nil
+	}
+	hits, err := r.collectRegexHits(text, overrides)
+	if err != nil {
+		return Result{Redacted: text}, err
+	}
+	nerHits, nerErr := collectNERHits(ctx, text, nerCfg)
+	if nerErr != nil {
+		// Return the regex-only result so a NER-backend outage doesn't
+		// strip the cheap protection. Caller decides fail-open vs
+		// fail-closed via the returned error.
+		return mergeAndEmit(text, hits), nerErr
+	}
+	return mergeAndEmit(text, append(hits, nerHits...)), nil
+}
+
+// redact is the internal regex-only entry point. RedactWithOverrides
+// is the public wrapper; RedactWithNER routes through here only when
+// the NER detector is nil (so the call site doesn't need a separate
+// "regex-only" code path).
+func (r *Redactor) redact(_ context.Context, text string, overrides map[string]Action, _ NERConfig) Result {
+	hits, _ := r.collectRegexHits(text, overrides)
+	return mergeAndEmit(text, hits)
+}
+
+// collectRegexHits walks the configured pattern set against text and
+// returns each verified match as a rawHit. The redactor lock is held
+// only long enough to snapshot the pattern slice — regex evaluation
+// runs lock-free against the snapshot, so SetAction/SetDisabled don't
+// stall a long-running Redact.
+func (r *Redactor) collectRegexHits(text string, overrides map[string]Action) ([]rawHit, error) {
 	r.mu.RLock()
 	patterns := r.patterns
 	r.mu.RUnlock()
 
 	if len(patterns) == 0 || text == "" {
-		return Result{Redacted: text}
-	}
-
-	type rawHit struct {
-		patternID string
-		action    Action
-		start     int
-		end       int
+		return nil, nil
 	}
 	var hits []rawHit
-
 	for _, p := range patterns {
 		if p.regex == nil {
 			// Pattern declared but Compile() not called. Skip rather
@@ -152,17 +201,60 @@ func (r *Redactor) RedactWithOverrides(text string, overrides map[string]Action)
 			})
 		}
 	}
+	return hits, nil
+}
 
+// collectNERHits invokes the configured NERDetector and converts each
+// returned entity into a rawHit using the NERConfig's action map.
+// Entities below MinScore or with no resolved action are dropped — the
+// detector doesn't know which entity groups the admin cares about, so
+// the redactor filters here.
+func collectNERHits(ctx context.Context, text string, cfg NERConfig) ([]rawHit, error) {
+	if cfg.Detector == nil || text == "" {
+		return nil, nil
+	}
+	entities, err := cfg.Detector.Detect(ctx, text)
+	if err != nil {
+		return nil, err
+	}
+	var hits []rawHit
+	for _, e := range entities {
+		if e.Score < cfg.MinScore {
+			continue
+		}
+		action, ok := cfg.ResolveAction(e.Group)
+		if !ok {
+			continue
+		}
+		if e.Start < 0 || e.End <= e.Start || e.End > len(text) {
+			// Defensive: the backend should return byte offsets into
+			// the original text, but a misconfigured model could
+			// produce garbage. Skip rather than panic on slice OOB.
+			continue
+		}
+		hits = append(hits, rawHit{
+			patternID: nerPatternID(e.Group),
+			action:    action,
+			start:     e.Start,
+			end:       e.End,
+		})
+	}
+	return hits, nil
+}
+
+// mergeAndEmit handles the overlap-merge + masked-output step that
+// regex-only and combined regex+NER redactions both perform. Sorts by
+// start (stable on equal starts by descending action strength), drops
+// overlapping hits in favour of the stronger action, and walks the
+// text once to emit replacement spans.
+func mergeAndEmit(text string, hits []rawHit) Result {
 	if len(hits) == 0 {
 		return Result{Redacted: text}
 	}
-
 	// Sort and deduplicate overlapping hits — when two patterns claim
 	// the same span (e.g., a credit-card-shaped value also scans as
-	// digits), keep the one with the strongest action. Order: block >
-	// route_local > mask. This ensures a deployment that sets the
-	// credit-card pattern to "block" wins over a more permissive
-	// rule that also covers the same text.
+	// digits, or NER tags a span the regex also caught), keep the one
+	// with the strongest action. Order: block > route_local > mask.
 	sort.Slice(hits, func(i, j int) bool {
 		if hits[i].start != hits[j].start {
 			return hits[i].start < hits[j].start
@@ -174,8 +266,6 @@ func (r *Redactor) RedactWithOverrides(text string, overrides map[string]Action)
 		if len(merged) > 0 {
 			last := &merged[len(merged)-1]
 			if h.start < last.end {
-				// Overlap. Extend the existing span and keep the
-				// stronger action.
 				if actionRank(h.action) > actionRank(last.action) {
 					last.action = h.action
 					last.patternID = h.patternID
@@ -207,11 +297,11 @@ func (r *Redactor) RedactWithOverrides(text string, overrides map[string]Action)
 		switch h.action {
 		case ActionBlock:
 			res.Blocked = true
-			out.WriteString(matched) // leave intact; caller short-circuits
+			out.WriteString(matched)
 		case ActionRouteLocal:
 			res.LocalOnly = true
 			out.WriteString(matched)
-		default: // ActionMask (and any unknown action defaults to mask)
+		default:
 			out.WriteString(maskFor(h.patternID))
 		}
 		cursor = h.end
