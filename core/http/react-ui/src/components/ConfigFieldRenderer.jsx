@@ -7,6 +7,7 @@ import AutocompleteInput from './AutocompleteInput'
 import CodeEditor from './CodeEditor'
 import StructuredCodeEditor from './StructuredCodeEditor'
 import PIIPatternListEditor from './PIIPatternListEditor'
+import RouterCandidatesEditor from './RouterCandidatesEditor'
 
 // Map autocomplete provider to SearchableModelSelect capability
 const PROVIDER_TO_CAPABILITY = {
@@ -354,6 +355,24 @@ export default function ConfigFieldRenderer({ field, value, onChange, onRemove, 
           </div>
         </div>
         <JsonEditor value={value} onChange={handleChange} />
+      </div>
+    )
+  }
+
+  // Router candidates — structured editor for the array of
+  // { label, model, rules, description }. Uses the model picker for
+  // each candidate's downstream model so admins don't have to type
+  // names from memory.
+  if (component === 'router-candidates') {
+    return (
+      <div style={{ padding: 'var(--spacing-sm) 0', borderBottom: '1px solid var(--color-border-subtle)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+          <div>
+            <div style={{ fontSize: '0.875rem', fontWeight: 500 }}><FieldLabel field={field} /></div>
+            <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', marginTop: 2 }}>{description}</div>
+          </div>
+        </div>
+        <RouterCandidatesEditor value={value} onChange={handleChange} />
       </div>
     )
   }

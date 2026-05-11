@@ -31,7 +31,7 @@ const ROUTER_METADATA = {
       order: 230,
     },
     { path: 'router.fallback', yaml_key: 'fallback', go_type: 'string', ui_type: 'string', section: 'other', label: 'Router Fallback', component: 'model-select', autocomplete_provider: 'models:chat', order: 231 },
-    { path: 'router.candidates', yaml_key: 'candidates', go_type: '[]RouterCandidate', ui_type: 'object', section: 'other', label: 'Router Candidates', component: 'code-editor', order: 237 },
+    { path: 'router.candidates', yaml_key: 'candidates', go_type: '[]RouterCandidate', ui_type: 'object', section: 'other', label: 'Router Candidates', component: 'router-candidates', order: 237 },
   ],
 }
 
@@ -99,10 +99,14 @@ test.describe('Router template — create flow', () => {
     await expect(page.locator('h1', { hasText: 'Model Editor' })).toBeVisible({ timeout: 10_000 })
 
     // The candidates field (the previously-crashing one) is labelled
-    // and visible. We don't assert on the CodeMirror inner text — the
-    // contract this test pins is "didn't crash"; the YAML round-trip
-    // is covered by a separate unit-level test if needed.
+    // and visible.
     await expect(page.getByText('Router Candidates').first()).toBeVisible()
+
+    // Structured editor is in use — the "Add candidate" button is the
+    // signature of the RouterCandidatesEditor (rather than the raw
+    // YAML code-editor). If someone reverts that wiring, this
+    // assertion catches it.
+    await expect(page.getByRole('button', { name: /Add candidate/i }).first()).toBeVisible()
 
     // Other router scalar fields populated from the template.
     await expect(page.getByText('Router Classifier').first()).toBeVisible()

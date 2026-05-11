@@ -454,8 +454,8 @@ func DefaultRegistry() map[string]FieldMetaOverride {
 		"router.candidates": {
 			Section:     "other",
 			Label:       "Router Candidates",
-			Description: "Labelled downstream models the classifier can pick. Each entry: { label, model, rules: { ... }, description?, rules.examples? }. The feature classifier reads rules; KNN reads rules.examples; LLM reads description.",
-			Component:   "code-editor",
+			Description: "Labelled downstream models the classifier can pick. The feature classifier reads rules; KNN reads rules.examples; LLM reads description.",
+			Component:   "router-candidates",
 			Order:       237,
 		},
 	}

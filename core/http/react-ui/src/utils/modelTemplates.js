@@ -79,9 +79,14 @@ const MODEL_TEMPLATES = [
     label: 'OpenAI Proxy',
     icon: 'fa-cloud',
     description: 'Forward chat completions to OpenAI or any OpenAI-compatible provider; PII redaction runs in flight',
+    // known_usecases is pre-seeded with chat so the proxy model
+    // surfaces in places that filter by capability — model pickers
+    // for chat, router fallback dropdowns, etc. Backends without an
+    // explicit usecase list are filtered out of those selectors.
     fields: {
       'name': '',
       'backend': 'proxy-openai',
+      'known_usecases': ['chat'],
       'proxy.upstream_url': 'https://api.openai.com/v1/chat/completions',
       'proxy.api_key_env': 'OPENAI_API_KEY',
       'proxy.upstream_model': '',
@@ -97,6 +102,7 @@ const MODEL_TEMPLATES = [
     fields: {
       'name': '',
       'backend': 'proxy-anthropic',
+      'known_usecases': ['chat'],
       'proxy.upstream_url': 'https://api.anthropic.com/v1/messages',
       'proxy.api_key_env': 'ANTHROPIC_API_KEY',
       'proxy.upstream_model': '',
