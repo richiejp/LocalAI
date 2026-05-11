@@ -220,6 +220,15 @@ type RouterConfig struct {
 	// be a callable embeddings model (FLAG_EMBEDDINGS).
 	EmbeddingModel string `yaml:"embedding_model,omitempty" json:"embedding_model,omitempty"`
 
+	// StoreModel names the vector-store backend the KNN classifier
+	// uses to persist and search exemplar embeddings. Empty
+	// defaults to the in-process local-store gRPC backend; any
+	// pluggable store backend (qdrant, pinecone, ...) works the
+	// same way. Each router model gets its own namespace under
+	// the chosen backend so exemplar sets stay isolated. Ignored
+	// when classifier != "knn".
+	StoreModel string `yaml:"store_model,omitempty" json:"store_model,omitempty"`
+
 	// MinScore is the cosine-similarity floor below which the KNN
 	// classifier returns no-match — the surrounding middleware
 	// then falls back. 0 disables the floor (every nearest

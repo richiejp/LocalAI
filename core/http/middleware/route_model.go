@@ -29,6 +29,15 @@ type EmbedderFactory func(modelName string) router.Embedder
 // returns a router.LLMCaller bound to a named instruct model.
 type LLMCallerFactory func(modelName string) router.LLMCaller
 
+// VectorStoreFactory returns a router.VectorStore bound to a named
+// store-backend model + namespace pair. The KNN classifier uses it
+// to seed and query its exemplar index; the implementation lives in
+// the application package and wraps pkg/store's gRPC client so any
+// pluggable vector-store backend (local-store, qdrant, ...) works
+// the same way. Returns nil for unknown models so buildClassifier
+// can surface a clear config error.
+type VectorStoreFactory func(backendName, storeNamespace string) router.VectorStore
+
 // ProbeExtractor pulls the prompt content out of a parsed request so
 // the classifier can inspect it without taking a dependency on the
 // schema package. One extractor per request shape — wired by the
@@ -65,7 +74,7 @@ type ProbeExtractor func(parsed any) (router.Probe, bool)
 // Composition with SmartRouter (distributed mode): this middleware
 // only does *model* selection. Node selection still happens in
 // SmartRouter.Route() downstream of this middleware.
-func RouteModel(loader *config.ModelConfigLoader, appConfig *config.ApplicationConfig, store router.DecisionStore, fallbackUser *auth.User, extractor ProbeExtractor, embedderFactory EmbedderFactory, llmFactory LLMCallerFactory) echo.MiddlewareFunc {
+func RouteModel(loader *config.ModelConfigLoader, appConfig *config.ApplicationConfig, store router.DecisionStore, fallbackUser *auth.User, extractor ProbeExtractor, embedderFactory EmbedderFactory, llmFactory LLMCallerFactory, vectorStoreFactory VectorStoreFactory) echo.MiddlewareFunc {
 	// Per-router-model classifier cache. KNN classifiers embed every
 	// exemplar on first Classify; without the cache that work
 	// repeats on every routed request. Keyed by router model name
@@ -89,7 +98,7 @@ func RouteModel(loader *config.ModelConfigLoader, appConfig *config.ApplicationC
 				return next(c)
 			}
 
-			classifier, classifierErr := getOrBuildClassifier(&classifiers, cfg.Name, cfg.Router, embedderFactory, llmFactory)
+			classifier, classifierErr := getOrBuildClassifier(&classifiers, cfg.Name, cfg.Router, embedderFactory, llmFactory, vectorStoreFactory)
 			if classifierErr != nil {
 				xlog.Warn("router: unsupported classifier — falling back",
 					"router_model", cfg.Name, "classifier", cfg.Router.Classifier, "error", classifierErr)
@@ -185,11 +194,11 @@ func rewriteRequest(c echo.Context, parsed any, routerCfg *config.ModelConfig, c
 	return next(c)
 }
 
-func getOrBuildClassifier(cache *sync.Map, routerModel string, rc config.RouterConfig, embedderFactory EmbedderFactory, llmFactory LLMCallerFactory) (router.Classifier, error) {
+func getOrBuildClassifier(cache *sync.Map, routerModel string, rc config.RouterConfig, embedderFactory EmbedderFactory, llmFactory LLMCallerFactory, vectorStoreFactory VectorStoreFactory) (router.Classifier, error) {
 	if cached, ok := cache.Load(routerModel); ok {
 		return cached.(router.Classifier), nil
 	}
-	c, err := buildClassifier(rc, embedderFactory, llmFactory)
+	c, err := buildClassifier(routerModel, rc, embedderFactory, llmFactory, vectorStoreFactory)
 	if err != nil {
 		return nil, err
 	}
@@ -199,7 +208,7 @@ func getOrBuildClassifier(cache *sync.Map, routerModel string, rc config.RouterC
 	return actual.(router.Classifier), nil
 }
 
-func buildClassifier(rc config.RouterConfig, embedderFactory EmbedderFactory, llmFactory LLMCallerFactory) (router.Classifier, error) {
+func buildClassifier(routerModel string, rc config.RouterConfig, embedderFactory EmbedderFactory, llmFactory LLMCallerFactory, vectorStoreFactory VectorStoreFactory) (router.Classifier, error) {
 	switch rc.Classifier {
 	case "", router.ClassifierFeature:
 		cands := make([]router.FeatureCandidate, 0, len(rc.Candidates))
@@ -224,9 +233,26 @@ func buildClassifier(rc config.RouterConfig, embedderFactory EmbedderFactory, ll
 		if embedderFactory == nil {
 			return nil, fmt.Errorf("router classifier knn unavailable: no embedder factory wired")
 		}
+		if vectorStoreFactory == nil {
+			return nil, fmt.Errorf("router classifier knn unavailable: no vector-store factory wired")
+		}
 		embedder := embedderFactory(rc.EmbeddingModel)
 		if embedder == nil {
 			return nil, fmt.Errorf("router classifier knn: embedding_model %q not loadable", rc.EmbeddingModel)
+		}
+		// Each router model gets its own namespace so two routers
+		// using the same store backend can't see each other's
+		// exemplars. ModelLoader gives us a fresh backend process
+		// per (backend, namespace) tuple, which is the isolation we
+		// want.
+		namespace := "router-knn-" + routerModel
+		store := vectorStoreFactory(rc.StoreModel, namespace)
+		if store == nil {
+			storeName := rc.StoreModel
+			if storeName == "" {
+				storeName = "(default local-store)"
+			}
+			return nil, fmt.Errorf("router classifier knn: store backend %q not loadable", storeName)
 		}
 		cands := make([]router.KNNCandidate, 0, len(rc.Candidates))
 		for _, c := range rc.Candidates {
@@ -241,7 +267,7 @@ func buildClassifier(rc config.RouterConfig, embedderFactory EmbedderFactory, ll
 		if len(cands) == 0 {
 			return nil, errClassifierUnavailable
 		}
-		return router.NewKNNClassifier(cands, embedder, float32(rc.MinScore)), nil
+		return router.NewKNNClassifier(cands, embedder, store, float32(rc.MinScore)), nil
 	case router.ClassifierLLM:
 		if rc.ClassifierModel == "" {
 			return nil, fmt.Errorf("router classifier llm requires classifier_model")

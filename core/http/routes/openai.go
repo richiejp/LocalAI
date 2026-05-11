@@ -62,6 +62,7 @@ func RegisterOpenAIRoutes(app *echo.Echo,
 			middleware.OpenAIProbe,
 			application.EmbedderFactory(),
 			application.LLMCallerFactory(),
+			application.VectorStoreFactory(),
 		),
 		// Admission control runs after RouteModel so the SERVED
 		// model's limits apply — a router fanout that lands on a

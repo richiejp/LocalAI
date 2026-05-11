@@ -64,7 +64,7 @@ var _ = Describe("RouteModel middleware", func() {
 	// the parsed request after rewrite so callers can assert on the
 	// model-name swap.
 	runMiddleware := func(routerCfg *config.ModelConfig, parsed any, store router.DecisionStore, extractor ProbeExtractor) (*httptest.ResponseRecorder, error) {
-		return runMiddlewareWithFactories(loader, appConfig, store, extractor, nil, nil, routerCfg, parsed)
+		return runMiddlewareWithFactories(loader, appConfig, store, extractor, nil, nil, nil, routerCfg, parsed)
 	}
 
 	Describe("classifier success path", func() {
@@ -298,11 +298,11 @@ router:
 })
 
 // runMiddlewareWithFactories is the explicit-deps variant of
-// runMiddleware. The KNN/LLM specs need to inject stub embedder
-// and LLM-caller factories; the closure form was getting unwieldy
-// once those parameters joined.
-func runMiddlewareWithFactories(loader *config.ModelConfigLoader, appConfig *config.ApplicationConfig, store router.DecisionStore, extractor ProbeExtractor, embedFactory EmbedderFactory, llmFactory LLMCallerFactory, routerCfg *config.ModelConfig, parsed any) (*httptest.ResponseRecorder, error) {
-	mw := RouteModel(loader, appConfig, store, nil, extractor, embedFactory, llmFactory)
+// runMiddleware. The KNN/LLM specs need to inject stub embedder,
+// LLM-caller, and vector-store factories; the closure form was
+// getting unwieldy once those parameters joined.
+func runMiddlewareWithFactories(loader *config.ModelConfigLoader, appConfig *config.ApplicationConfig, store router.DecisionStore, extractor ProbeExtractor, embedFactory EmbedderFactory, llmFactory LLMCallerFactory, vsFactory VectorStoreFactory, routerCfg *config.ModelConfig, parsed any) (*httptest.ResponseRecorder, error) {
+	mw := RouteModel(loader, appConfig, store, nil, extractor, embedFactory, llmFactory, vsFactory)
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader("{}"))
 	rec := httptest.NewRecorder()
 	c := echo.New().NewContext(req, rec)
@@ -333,6 +333,51 @@ func (s *stubKNNEmbedder) Embed(_ context.Context, text string) ([]float32, erro
 		}
 	}
 	return []float32{0, 0, 1}, nil
+}
+
+// stubVectorStore is an in-memory dot-product KNN used by the
+// middleware-level integration test. Mirrors the router-package
+// stub — keeps the test free of a real local-store backend process.
+type stubVectorStore struct {
+	keys   [][]float32
+	values [][]byte
+}
+
+func (s *stubVectorStore) Set(_ context.Context, keys [][]float32, values [][]byte) error {
+	s.keys = append(s.keys, keys...)
+	s.values = append(s.values, values...)
+	return nil
+}
+
+func (s *stubVectorStore) Find(_ context.Context, query []float32, topK int) ([][]byte, []float32, error) {
+	type item struct {
+		sim float32
+		val []byte
+	}
+	items := make([]item, 0, len(s.keys))
+	for i, k := range s.keys {
+		var dot float64
+		for j := range k {
+			dot += float64(k[j]) * float64(query[j])
+		}
+		items = append(items, item{sim: float32(dot), val: s.values[i]})
+	}
+	// simple insertion sort by descending sim — n is tiny.
+	for i := 1; i < len(items); i++ {
+		for j := i; j > 0 && items[j].sim > items[j-1].sim; j-- {
+			items[j], items[j-1] = items[j-1], items[j]
+		}
+	}
+	if topK > len(items) {
+		topK = len(items)
+	}
+	values := make([][]byte, topK)
+	sims := make([]float32, topK)
+	for i := 0; i < topK; i++ {
+		values[i] = items[i].val
+		sims[i] = items[i].sim
+	}
+	return values, sims, nil
 }
 
 var _ = Describe("RouteModel KNN classifier integration", func() {
@@ -405,7 +450,8 @@ router:
 		parsed.Messages = []schema.Message{{Role: "user", Content: "fix this bug please"}}
 
 		store := router.NewMemoryDecisionStore(10)
-		rec, err := runMiddlewareWithFactories(loader, appConfig, store, OpenAIProbe, embedFactory, nil, routerCfg, parsed)
+		vsFactory := func(_, _ string) router.VectorStore { return &stubVectorStore{} }
+		rec, err := runMiddlewareWithFactories(loader, appConfig, store, OpenAIProbe, embedFactory, nil, vsFactory, routerCfg, parsed)
 		Expect(err).ToNot(HaveOccurred())
 		Expect(rec.Code).To(Equal(http.StatusOK))
 		Expect(parsed.Model).To(Equal("qwen-coder"), "KNN should route bug-fix to coder via nearest exemplar")
@@ -435,7 +481,7 @@ router:
 		parsed.Messages = []schema.Message{{Role: "user", Content: "anything"}}
 
 		// nil EmbedderFactory mimics --disable-stats / no embedding wiring.
-		_, err := runMiddlewareWithFactories(loader, appConfig, nil, OpenAIProbe, nil, nil, routerCfg, parsed)
+		_, err := runMiddlewareWithFactories(loader, appConfig, nil, OpenAIProbe, nil, nil, nil, routerCfg, parsed)
 		Expect(err).ToNot(HaveOccurred(), "should gracefully fall back rather than 503")
 		Expect(parsed.Model).To(Equal("qwen-fb"))
 	})

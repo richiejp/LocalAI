@@ -3,6 +3,7 @@ package router
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -46,13 +47,67 @@ func newStubEmbedder() *stubEmbedder {
 	}
 }
 
+// stubVectorStore is an in-test cosine-KNN over float32 vectors —
+// independent of the gRPC local-store backend so the router tests
+// stay hermetic. Keeps the same Set/Find shape the production
+// adapter wraps over pkg/store.{SetCols,Find}.
+type stubVectorStore struct {
+	keys   [][]float32
+	values [][]byte
+}
+
+func (s *stubVectorStore) Set(_ context.Context, keys [][]float32, values [][]byte) error {
+	s.keys = append(s.keys, keys...)
+	s.values = append(s.values, values...)
+	return nil
+}
+
+func (s *stubVectorStore) Find(_ context.Context, query []float32, topK int) ([][]byte, []float32, error) {
+	type item struct {
+		sim float32
+		val []byte
+	}
+	items := make([]item, 0, len(s.keys))
+	for i, k := range s.keys {
+		if len(k) != len(query) {
+			return nil, nil, errors.New("stubVectorStore: dim mismatch")
+		}
+		var dot float64
+		for j := range k {
+			dot += float64(k[j]) * float64(query[j])
+		}
+		items = append(items, item{sim: float32(dot), val: s.values[i]})
+	}
+	slices.SortFunc(items, func(a, b item) int {
+		if a.sim > b.sim {
+			return -1
+		}
+		if a.sim < b.sim {
+			return 1
+		}
+		return 0
+	})
+	if topK > len(items) {
+		topK = len(items)
+	}
+	values := make([][]byte, topK)
+	sims := make([]float32, topK)
+	for i := 0; i < topK; i++ {
+		values[i] = items[i].val
+		sims[i] = items[i].sim
+	}
+	return values, sims, nil
+}
+
+func newStore() *stubVectorStore { return &stubVectorStore{} }
+
 func TestKNNClassifier_PicksNearestExemplarLabel(t *testing.T) {
 	emb := newStubEmbedder()
 	cands := []KNNCandidate{
 		{Label: "code", Examples: []string{"code question"}},
 		{Label: "weather", Examples: []string{"weather forecast"}},
 	}
-	c := NewKNNClassifier(cands, emb, 0.0)
+	c := NewKNNClassifier(cands, emb, newStore(), 0.0)
 
 	d, err := c.Classify(context.Background(), Probe{Prompt: "show me the code"})
 	if err != nil {
@@ -72,7 +127,7 @@ func TestKNNClassifier_EmbedsExemplarsOnce(t *testing.T) {
 		{Label: "code", Examples: []string{"code question", "code review"}},
 		{Label: "weather", Examples: []string{"weather forecast"}},
 	}
-	c := NewKNNClassifier(cands, emb, 0.0)
+	c := NewKNNClassifier(cands, emb, newStore(), 0.0)
 
 	if _, err := c.Classify(context.Background(), Probe{Prompt: "code please"}); err != nil {
 		t.Fatal(err)
@@ -99,7 +154,7 @@ func TestKNNClassifier_EmbedderFailureAtLoadIsRetryable(t *testing.T) {
 	cands := []KNNCandidate{
 		{Label: "code", Examples: []string{"code question"}},
 	}
-	c := NewKNNClassifier(cands, emb, 0.0)
+	c := NewKNNClassifier(cands, emb, newStore(), 0.0)
 
 	if _, err := c.Classify(context.Background(), Probe{Prompt: "code"}); err == nil {
 		t.Fatal("first Classify should surface load error")
@@ -117,7 +172,7 @@ func TestKNNClassifier_MinScoreFiltersWeakMatches(t *testing.T) {
 	cands := []KNNCandidate{
 		{Label: "code", Examples: []string{"code question"}},
 	}
-	c := NewKNNClassifier(cands, emb, 0.5)
+	c := NewKNNClassifier(cands, emb, newStore(), 0.5)
 
 	_, err := c.Classify(context.Background(), Probe{Prompt: "totally unrelated"})
 	if err == nil {
@@ -140,7 +195,7 @@ func TestKNNClassifier_DimensionMismatchIsErrored(t *testing.T) {
 	cands := []KNNCandidate{
 		{Label: "code", Examples: []string{"code question"}},
 	}
-	c := NewKNNClassifier(cands, emb, 0.0)
+	c := NewKNNClassifier(cands, emb, newStore(), 0.0)
 
 	_, err := c.Classify(context.Background(), Probe{Prompt: "probe text"})
 	if err == nil || !strings.Contains(err.Error(), "dimension") {
@@ -157,6 +212,7 @@ func TestKNNClassifier_PanicsOnEmptyExamples(t *testing.T) {
 	NewKNNClassifier(
 		[]KNNCandidate{{Label: "code", Examples: nil}},
 		newStubEmbedder(),
+		newStore(),
 		0.0,
 	)
 }
@@ -169,6 +225,21 @@ func TestKNNClassifier_PanicsOnNilEmbedder(t *testing.T) {
 	}()
 	NewKNNClassifier(
 		[]KNNCandidate{{Label: "code", Examples: []string{"x"}}},
+		nil,
+		newStore(),
+		0.0,
+	)
+}
+
+func TestKNNClassifier_PanicsOnNilStore(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("expected panic for nil store")
+		}
+	}()
+	NewKNNClassifier(
+		[]KNNCandidate{{Label: "code", Examples: []string{"x"}}},
+		newStubEmbedder(),
 		nil,
 		0.0,
 	)
