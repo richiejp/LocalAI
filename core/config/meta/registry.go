@@ -416,7 +416,7 @@ func DefaultRegistry() map[string]FieldMetaOverride {
 		"router.embedding_model": {
 			Section:              "other",
 			Label:                "Router Embedding Model",
-			Description:          "Embedding model for the KNN classifier — embeds both probe prompts and candidate exemplars. Required when classifier is 'knn'.",
+			Description:          "Embedding model for the KNN classifier — embeds both probe prompts and candidate exemplars. Required when classifier is 'knn'. A long-context sentence encoder works best; nomic-embed-text-v1.5 (NomicBert, 8192 ctx, GGUF via llama-cpp) is a good default. Other supported encoders include modernbert-embed-base and jina-embeddings-v3.",
 			Component:            "model-select",
 			AutocompleteProvider: ProviderModels,
 			Order:                232,

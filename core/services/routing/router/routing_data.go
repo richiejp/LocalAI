@@ -100,9 +100,12 @@ func LoadRoutingDataset(path string) (*RoutingDataset, error) {
 
 	ds := &RoutingDataset{}
 	scanner := bufio.NewScanner(f)
-	// Default scanner buffer maxes at 64KB; routing rows with
-	// inline embeddings can exceed that easily (a 4096-D Longformer
-	// row is ~50KB of float JSON alone). Bump to 8MB per line.
+	// Default scanner buffer maxes at 64KB. A row with an inline
+	// pre-computed embedding can blow past that — a 1024-D
+	// jina-v3 vector serialised as JSON is already ~10KB; some
+	// models output 4096-D. Bump to 8MB per line with the same
+	// 64KB initial allocation, so small rows don't pay the
+	// memory cost up front.
 	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
 
 	lineNum := 0
