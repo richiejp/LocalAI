@@ -458,5 +458,12 @@ func DefaultRegistry() map[string]FieldMetaOverride {
 			Component:   "router-candidates",
 			Order:       237,
 		},
+		"router.exemplars_file": {
+			Section:     "other",
+			Label:       "Router Exemplars File",
+			Description: "Optional path to a JSONL routing dataset produced by a benchmarking pipeline (one row per query: {query, best_model, scores?, embedding?}). The KNN classifier seeds from these rows in addition to any hand-written candidate examples. Relative paths resolve against the models directory.",
+			Component:   "input",
+			Order:       238,
+		},
 	}
 }

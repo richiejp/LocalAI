@@ -235,6 +235,15 @@ type RouterConfig struct {
 	// exemplar wins regardless of similarity).
 	MinScore float64 `yaml:"min_score,omitempty" json:"min_score,omitempty"`
 
+	// ExemplarsFile points at an optional JSONL dataset produced by
+	// a benchmarking pipeline. Each row is {query, best_model,
+	// scores?, embedding?}; the KNN classifier loads rows whose
+	// best_model matches a candidate and uses the candidate's
+	// label. Relative paths resolve against the models directory.
+	// Combine with hand-written candidate.examples — both sources
+	// seed the same store.
+	ExemplarsFile string `yaml:"exemplars_file,omitempty" json:"exemplars_file,omitempty"`
+
 	// ClassifierModel names the LLM the "llm" classifier asks for
 	// the routing decision. Required when classifier is "llm";
 	// ignored otherwise. Should be a small, fast instruct model.

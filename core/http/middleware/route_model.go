@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -98,7 +99,7 @@ func RouteModel(loader *config.ModelConfigLoader, appConfig *config.ApplicationC
 				return next(c)
 			}
 
-			classifier, classifierErr := getOrBuildClassifier(&classifiers, cfg.Name, cfg.Router, embedderFactory, llmFactory, vectorStoreFactory)
+			classifier, classifierErr := getOrBuildClassifier(&classifiers, cfg.Name, cfg.Router, appConfig, embedderFactory, llmFactory, vectorStoreFactory)
 			if classifierErr != nil {
 				xlog.Warn("router: unsupported classifier — falling back",
 					"router_model", cfg.Name, "classifier", cfg.Router.Classifier, "error", classifierErr)
@@ -194,11 +195,11 @@ func rewriteRequest(c echo.Context, parsed any, routerCfg *config.ModelConfig, c
 	return next(c)
 }
 
-func getOrBuildClassifier(cache *sync.Map, routerModel string, rc config.RouterConfig, embedderFactory EmbedderFactory, llmFactory LLMCallerFactory, vectorStoreFactory VectorStoreFactory) (router.Classifier, error) {
+func getOrBuildClassifier(cache *sync.Map, routerModel string, rc config.RouterConfig, appConfig *config.ApplicationConfig, embedderFactory EmbedderFactory, llmFactory LLMCallerFactory, vectorStoreFactory VectorStoreFactory) (router.Classifier, error) {
 	if cached, ok := cache.Load(routerModel); ok {
 		return cached.(router.Classifier), nil
 	}
-	c, err := buildClassifier(routerModel, rc, embedderFactory, llmFactory, vectorStoreFactory)
+	c, err := buildClassifier(routerModel, rc, appConfig, embedderFactory, llmFactory, vectorStoreFactory)
 	if err != nil {
 		return nil, err
 	}
@@ -208,7 +209,7 @@ func getOrBuildClassifier(cache *sync.Map, routerModel string, rc config.RouterC
 	return actual.(router.Classifier), nil
 }
 
-func buildClassifier(routerModel string, rc config.RouterConfig, embedderFactory EmbedderFactory, llmFactory LLMCallerFactory, vectorStoreFactory VectorStoreFactory) (router.Classifier, error) {
+func buildClassifier(routerModel string, rc config.RouterConfig, appConfig *config.ApplicationConfig, embedderFactory EmbedderFactory, llmFactory LLMCallerFactory, vectorStoreFactory VectorStoreFactory) (router.Classifier, error) {
 	switch rc.Classifier {
 	case "", router.ClassifierFeature:
 		cands := make([]router.FeatureCandidate, 0, len(rc.Candidates))
@@ -256,18 +257,45 @@ func buildClassifier(routerModel string, rc config.RouterConfig, embedderFactory
 		}
 		cands := make([]router.KNNCandidate, 0, len(rc.Candidates))
 		for _, c := range rc.Candidates {
-			if len(c.Rules.Examples) == 0 {
-				return nil, fmt.Errorf("router classifier knn: candidate %q has no examples", c.Label)
-			}
 			cands = append(cands, router.KNNCandidate{
 				Label:    c.Label,
+				Model:    c.Model,
 				Examples: c.Rules.Examples,
 			})
 		}
 		if len(cands) == 0 {
 			return nil, errClassifierUnavailable
 		}
-		return router.NewKNNClassifier(cands, embedder, store, float32(rc.MinScore)), nil
+		// Load the optional benchmarker-produced dataset. Empty
+		// hand-written Examples + no dataset would seed nothing and
+		// fail on first Classify — that's the right failure mode,
+		// surfaced to the admin via the fallback path. The reverse —
+		// ExemplarsFile set but unreadable — is a config bug, fail
+		// loud at build time.
+		var dsOpts router.KNNOptions
+		dsOpts.EmbeddingModelName = rc.EmbeddingModel
+		if rc.ExemplarsFile != "" {
+			path := rc.ExemplarsFile
+			if !filepath.IsAbs(path) && appConfig != nil && appConfig.SystemState != nil {
+				path = filepath.Join(appConfig.SystemState.Model.ModelsPath, path)
+			}
+			dataset, err := router.LoadRoutingDataset(path)
+			if err != nil {
+				return nil, fmt.Errorf("router classifier knn: load exemplars file: %w", err)
+			}
+			dsOpts.Dataset = dataset
+		}
+		// Each candidate must have at least one exemplar source —
+		// either hand-written Examples or a dataset row whose
+		// best_model matches its Model.
+		if dsOpts.Dataset == nil {
+			for _, c := range cands {
+				if len(c.Examples) == 0 {
+					return nil, fmt.Errorf("router classifier knn: candidate %q has no examples and no exemplars_file configured", c.Label)
+				}
+			}
+		}
+		return router.NewKNNClassifier(cands, embedder, store, float32(rc.MinScore), dsOpts), nil
 	case router.ClassifierLLM:
 		if rc.ClassifierModel == "" {
 			return nil, fmt.Errorf("router classifier llm requires classifier_model")

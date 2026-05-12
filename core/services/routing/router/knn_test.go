@@ -107,7 +107,7 @@ func TestKNNClassifier_PicksNearestExemplarLabel(t *testing.T) {
 		{Label: "code", Examples: []string{"code question"}},
 		{Label: "weather", Examples: []string{"weather forecast"}},
 	}
-	c := NewKNNClassifier(cands, emb, newStore(), 0.0)
+	c := NewKNNClassifier(cands, emb, newStore(), 0.0, KNNOptions{})
 
 	d, err := c.Classify(context.Background(), Probe{Prompt: "show me the code"})
 	if err != nil {
@@ -127,7 +127,7 @@ func TestKNNClassifier_EmbedsExemplarsOnce(t *testing.T) {
 		{Label: "code", Examples: []string{"code question", "code review"}},
 		{Label: "weather", Examples: []string{"weather forecast"}},
 	}
-	c := NewKNNClassifier(cands, emb, newStore(), 0.0)
+	c := NewKNNClassifier(cands, emb, newStore(), 0.0, KNNOptions{})
 
 	if _, err := c.Classify(context.Background(), Probe{Prompt: "code please"}); err != nil {
 		t.Fatal(err)
@@ -154,7 +154,7 @@ func TestKNNClassifier_EmbedderFailureAtLoadIsRetryable(t *testing.T) {
 	cands := []KNNCandidate{
 		{Label: "code", Examples: []string{"code question"}},
 	}
-	c := NewKNNClassifier(cands, emb, newStore(), 0.0)
+	c := NewKNNClassifier(cands, emb, newStore(), 0.0, KNNOptions{})
 
 	if _, err := c.Classify(context.Background(), Probe{Prompt: "code"}); err == nil {
 		t.Fatal("first Classify should surface load error")
@@ -172,7 +172,7 @@ func TestKNNClassifier_MinScoreFiltersWeakMatches(t *testing.T) {
 	cands := []KNNCandidate{
 		{Label: "code", Examples: []string{"code question"}},
 	}
-	c := NewKNNClassifier(cands, emb, newStore(), 0.5)
+	c := NewKNNClassifier(cands, emb, newStore(), 0.5, KNNOptions{})
 
 	_, err := c.Classify(context.Background(), Probe{Prompt: "totally unrelated"})
 	if err == nil {
@@ -195,7 +195,7 @@ func TestKNNClassifier_DimensionMismatchIsErrored(t *testing.T) {
 	cands := []KNNCandidate{
 		{Label: "code", Examples: []string{"code question"}},
 	}
-	c := NewKNNClassifier(cands, emb, newStore(), 0.0)
+	c := NewKNNClassifier(cands, emb, newStore(), 0.0, KNNOptions{})
 
 	_, err := c.Classify(context.Background(), Probe{Prompt: "probe text"})
 	if err == nil || !strings.Contains(err.Error(), "dimension") {
@@ -203,18 +203,22 @@ func TestKNNClassifier_DimensionMismatchIsErrored(t *testing.T) {
 	}
 }
 
-func TestKNNClassifier_PanicsOnEmptyExamples(t *testing.T) {
-	defer func() {
-		if r := recover(); r == nil {
-			t.Error("expected panic for empty examples")
-		}
-	}()
-	NewKNNClassifier(
+func TestKNNClassifier_EmptyExamplesNoDatasetFailsAtClassify(t *testing.T) {
+	// Empty Examples is no longer a constructor panic — a candidate
+	// might be filled in by a RoutingDataset instead. With neither
+	// source the seeding step fails on the first Classify, which is
+	// where the middleware naturally falls back. Asserts that path.
+	c := NewKNNClassifier(
 		[]KNNCandidate{{Label: "code", Examples: nil}},
 		newStubEmbedder(),
 		newStore(),
 		0.0,
+		KNNOptions{},
 	)
+	_, err := c.Classify(context.Background(), Probe{Prompt: "x"})
+	if err == nil {
+		t.Error("expected seeding error when no Examples and no dataset")
+	}
 }
 
 func TestKNNClassifier_PanicsOnNilEmbedder(t *testing.T) {
@@ -228,6 +232,7 @@ func TestKNNClassifier_PanicsOnNilEmbedder(t *testing.T) {
 		nil,
 		newStore(),
 		0.0,
+		KNNOptions{},
 	)
 }
 
@@ -242,5 +247,6 @@ func TestKNNClassifier_PanicsOnNilStore(t *testing.T) {
 		newStubEmbedder(),
 		nil,
 		0.0,
+		KNNOptions{},
 	)
 }
