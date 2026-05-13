@@ -107,6 +107,19 @@ func RegisterMiddlewareRoutes(e *echo.Echo, app *application.Application) {
 		}
 		return c.JSON(http.StatusOK, map[string]any{"decisions": decisions})
 	})
+
+	// GET /api/router/cache/stats — embedding-cache counters per
+	// router model. Read-only; same auth gating as /api/router/status
+	// (any authenticated user can see configuration). Omitted entries
+	// indicate "embedding cache not enabled for this router".
+	e.GET("/api/router/cache/stats", func(c echo.Context) error {
+		reg := app.RouterClassifierRegistry()
+		stats := map[string]router.EmbeddingCacheStats{}
+		if reg != nil {
+			stats = reg.EmbeddingCacheStatsByRouter()
+		}
+		return c.JSON(http.StatusOK, map[string]any{"caches": stats})
+	})
 }
 
 // buildRouterStatus inventories every model that declares a Router
@@ -116,6 +129,10 @@ func RegisterMiddlewareRoutes(e *echo.Echo, app *application.Application) {
 func buildRouterStatus(app *application.Application) map[string]any {
 	models := []map[string]any{}
 	hasAny := false
+	cacheStats := map[string]router.EmbeddingCacheStats{}
+	if reg := app.RouterClassifierRegistry(); reg != nil {
+		cacheStats = reg.EmbeddingCacheStatsByRouter()
+	}
 	for _, cfg := range app.ModelConfigLoader().GetAllModelsConfigs() {
 		if !cfg.HasRouter() {
 			continue
@@ -124,25 +141,41 @@ func buildRouterStatus(app *application.Application) map[string]any {
 		candidates := make([]map[string]any, 0, len(cfg.Router.Candidates))
 		for _, ca := range cfg.Router.Candidates {
 			candidates = append(candidates, map[string]any{
-				"label": ca.Label,
-				"model": ca.Model,
-				"rules": map[string]any{
-					"max_prompt_length": ca.Rules.MaxPromptLength,
-					"min_prompt_length": ca.Rules.MinPromptLength,
-					"requires_code":     ca.Rules.RequiresCode,
-				},
+				"model":  ca.Model,
+				"labels": ca.Labels,
+			})
+		}
+		policies := make([]map[string]any, 0, len(cfg.Router.Policies))
+		for _, p := range cfg.Router.Policies {
+			policies = append(policies, map[string]any{
+				"label":       p.Label,
+				"description": p.Description,
 			})
 		}
 		classifier := cfg.Router.Classifier
 		if classifier == "" {
-			classifier = "feature"
+			classifier = router.ClassifierScore
 		}
-		models = append(models, map[string]any{
+		entry := map[string]any{
 			"name":       cfg.Name,
 			"classifier": classifier,
+			"policies":   policies,
 			"candidates": candidates,
 			"fallback":   cfg.Router.Fallback,
-		})
+		}
+		if ec := cfg.Router.EmbeddingCache; ec != nil {
+			cacheEntry := map[string]any{
+				"embedding_model":      ec.EmbeddingModel,
+				"similarity_threshold": ec.SimilarityThreshold,
+				"confidence_threshold": ec.ConfidenceThreshold,
+				"store_name":           ec.StoreName,
+			}
+			if s, ok := cacheStats[cfg.Name]; ok {
+				cacheEntry["stats"] = s
+			}
+			entry["embedding_cache"] = cacheEntry
+		}
+		models = append(models, entry)
 	}
 
 	recentCount := 0
@@ -156,7 +189,7 @@ func buildRouterStatus(app *application.Application) map[string]any {
 		"configured":          hasAny,
 		"models":              models,
 		"recent_decision_count": recentCount,
-		"available_classifiers": []string{"feature"},
+		"available_classifiers": []string{router.ClassifierScore},
 	}
 	if !hasAny {
 		out["note"] = "No router models configured. Add a `router:` block to a model YAML to enable intelligent routing."

@@ -389,81 +389,103 @@ func DefaultRegistry() map[string]FieldMetaOverride {
 
 		// --- Router ---
 		// Routing turns this model config into a dispatcher: the
-		// classifier inspects each incoming request's prompt and
-		// rewrites the served model to one of the listed candidates.
-		// The Routing tab of the middleware admin page surfaces every
-		// model with a router block.
+		// classifier scores every policy label as a continuation of
+		// the routing prompt and picks the first candidate whose
+		// labels are a superset of the active set. The Routing tab of
+		// the middleware admin page surfaces every model with a router
+		// block.
 		"router.classifier": {
 			Section:     "other",
-			Label:       "Router Classifier",
-			Description: "Which classifier picks a candidate. 'feature' = cheap rules (length, code-fence); 'knn' = nearest-exemplar via an embedding model + vector store; 'llm' = ask a small instruct model.",
+			Label:       "Classifier",
+			Description: "Picks a candidate by scoring every policy label against the prompt. Only \"score\" is shipped today; it asks the classifier_model to rank each label and reads off the softmax. Empty defaults to \"score\".",
 			Component:   "select",
 			Options: []FieldOption{
-				{Value: "feature", Label: "Feature (rules)"},
-				{Value: "knn", Label: "KNN (embeddings)"},
-				{Value: "llm", Label: "LLM (small instruct)"},
+				{Value: "score", Label: "Score (Arch-Router-style)"},
 			},
 			Order: 230,
 		},
-		"router.fallback": {
+		"router.classifier_model": {
 			Section:              "other",
-			Label:                "Router Fallback",
-			Description:          "Model used when the classifier returns no match or the matched label can't be resolved. Empty means classifier failures bubble up as 500 — fail-fast, not silent-bypass.",
+			Label:                "Classifier Model",
+			Description:          "Loaded LocalAI model the score classifier asks to rank each policy label as a continuation. Must support the Score gRPC primitive (today: llama-cpp, vLLM) and use the ChatML template. Arch-Router-1.5B Q4_K_M is the canonical choice; any small ChatML instruct model also works at a higher activation_threshold.",
 			Component:            "model-select",
 			AutocompleteProvider: ProviderModelsChat,
 			Order:                231,
 		},
-		"router.embedding_model": {
+		"router.fallback": {
 			Section:              "other",
-			Label:                "Router Embedding Model",
-			Description:          "Embedding model for the KNN classifier — embeds both probe prompts and candidate exemplars. Required when classifier is 'knn'. A long-context sentence encoder works best; nomic-embed-text-v1.5 (NomicBert, 8192 ctx, GGUF via llama-cpp) is a good default. Other supported encoders include modernbert-embed-base and jina-embeddings-v3.",
-			Component:            "model-select",
-			AutocompleteProvider: ProviderModels,
-			Order:                232,
-		},
-		"router.store_model": {
-			Section:              "other",
-			Label:                "Router Vector Store",
-			Description:          "Vector-store backend the KNN classifier uses for exemplar embeddings. Empty defaults to the in-process local-store backend; any pluggable vector store (qdrant, pinecone, ...) works the same way. Ignored when classifier != 'knn'.",
-			Component:            "model-select",
-			AutocompleteProvider: ProviderModels,
-			Order:                233,
-		},
-		"router.min_score": {
-			Section:     "other",
-			Label:       "Router Minimum Score",
-			Description: "Cosine-similarity floor for the KNN classifier — best matches below this score fall back. 0 disables the floor.",
-			Component:   "number",
-			Order:       234,
-		},
-		"router.classifier_model": {
-			Section:              "other",
-			Label:                "Router Classifier Model",
-			Description:          "Small instruct model the LLM classifier asks for routing decisions. Required when classifier is 'llm'.",
+			Label:                "Fallback Model",
+			Description:          "Model used when no candidate's labels cover the classifier's active label set, or when the classifier errors. Empty means router failures bubble up as HTTP 500 — fail-fast, not silent-bypass.",
 			Component:            "model-select",
 			AutocompleteProvider: ProviderModelsChat,
-			Order:                235,
+			Order:                232,
+		},
+		"router.activation_threshold": {
+			Section:     "other",
+			Label:       "Activation Threshold",
+			Description: "Softmax-probability floor a policy must clear to join the active label set for a request. Higher → single-label dominant routes; lower → more multi-label activations. 0 picks the package default (0.15). On Arch-Router-1.5B a value around 0.40 keeps the dominant label clean without losing genuine compound activations.",
+			Component:   "slider",
+			Min:         f64(0),
+			Max:         f64(1),
+			Step:        f64(0.05),
+			Order:       233,
 		},
 		"router.classifier_cache_size": {
 			Section:     "other",
-			Label:       "Router LLM Cache Size",
-			Description: "Bounds the LLM classifier's per-prompt memo cache. 0 disables; default 1024.",
+			Label:       "Classifier L1 Cache Size",
+			Description: "Bounded LRU keyed on (case-folded, whitespace-trimmed) prompt — amortises the classifier round-trip across verbatim repeats common in agent loops. 0 here means \"use the default\" (1024); the cache cannot be disabled from YAML.",
 			Component:   "number",
-			Order:       236,
+			Min:         f64(0),
+			Order:       234,
+		},
+		"router.policies": {
+			Section:     "other",
+			Label:       "Policies",
+			Description: "Label vocabulary the classifier scores over. Each policy has a label and a short natural-language description fed verbatim to the classifier model. Short action-oriented sentences work best (\"writing or debugging code\"; \"small talk\").",
+			Component:   "router-policies",
+			Order:       235,
 		},
 		"router.candidates": {
 			Section:     "other",
-			Label:       "Router Candidates",
-			Description: "Labelled downstream models the classifier can pick. The feature classifier reads rules; KNN reads rules.examples; LLM reads description.",
+			Label:       "Candidates",
+			Description: "Routing table: each entry binds a downstream model to a set of policy labels it can serve. Order matters — the middleware picks the FIRST candidate whose labels are a superset of the active set, so list candidates smallest → largest.",
 			Component:   "router-candidates",
-			Order:       237,
+			Order:       236,
 		},
-		"router.exemplars_file": {
+		"router.embedding_cache.embedding_model": {
+			Section:              "other",
+			Label:                "L2 Cache: Embedding Model",
+			Description:          "Embedding model used by the L2 decision cache. Embeds incoming probes and looks them up in the per-router local-store collection. Empty disables the cache entirely. nomic-embed-text-v1.5 is the recommended default.",
+			Component:            "model-select",
+			AutocompleteProvider: ProviderModels,
+			Order:                237,
+		},
+		"router.embedding_cache.similarity_threshold": {
 			Section:     "other",
-			Label:       "Router Exemplars File",
-			Description: "Optional path to a JSONL routing dataset produced by a benchmarking pipeline (one row per query: {query, best_model, scores?, embedding?}). The KNN classifier seeds from these rows in addition to any hand-written candidate examples. Relative paths resolve against the models directory.",
-			Component:   "input",
+			Label:       "L2 Cache: Similarity Threshold",
+			Description: "Cosine-similarity floor a cache candidate must clear to count as a hit. 0 picks the package default (0.80). Re-tune per embedding model — the histogram on the Routing tab shows where the cosine distribution actually sits.",
+			Component:   "slider",
+			Min:         f64(0),
+			Max:         f64(1),
+			Step:        f64(0.01),
 			Order:       238,
+		},
+		"router.embedding_cache.confidence_threshold": {
+			Section:     "other",
+			Label:       "L2 Cache: Confidence Threshold",
+			Description: "Minimum top-label probability a classifier decision must have to be inserted into the cache. 0 picks the package default (0.60). Uncertain decisions are skipped so they can't poison future paraphrases.",
+			Component:   "slider",
+			Min:         f64(0),
+			Max:         f64(1),
+			Step:        f64(0.05),
+			Order:       239,
+		},
+		"router.embedding_cache.store_name": {
+			Section:     "other",
+			Label:       "L2 Cache: Store Name",
+			Description: "Optional override for the local-store collection used by this router's cache. Empty defaults to \"router-cache-<router-model-name>\". Two routers sharing a store_name share their cache (rare).",
+			Component:   "input",
+			Order:       240,
 		},
 	}
 }

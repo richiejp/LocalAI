@@ -136,6 +136,10 @@ func (e *embedBackend) TokenClassify(ctx context.Context, in *pb.TokenClassifyRe
 	return e.s.TokenClassify(ctx, in)
 }
 
+func (e *embedBackend) Score(ctx context.Context, in *pb.ScoreRequest, opts ...grpc.CallOption) (*pb.ScoreResponse, error) {
+	return e.s.Score(ctx, in)
+}
+
 func (e *embedBackend) VAD(ctx context.Context, in *pb.VADRequest, opts ...grpc.CallOption) (*pb.VADResponse, error) {
 	return e.s.VAD(ctx, in)
 }

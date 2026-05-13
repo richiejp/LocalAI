@@ -60,9 +60,12 @@ func RegisterOpenAIRoutes(app *echo.Echo,
 			application.RouterDecisions(),
 			application.FallbackUser(),
 			middleware.OpenAIProbe,
-			application.EmbedderFactory(),
-			application.LLMCallerFactory(),
-			application.VectorStoreFactory(),
+			middleware.ClassifierDeps{
+				Scorer:      application.ScorerFactory(),
+				Embedder:    application.EmbedderFactory(),
+				VectorStore: application.VectorStoreFactory(),
+				Registry:    application.RouterClassifierRegistry(),
+			},
 		),
 		// Admission control runs after RouteModel so the SERVED
 		// model's limits apply — a router fanout that lands on a

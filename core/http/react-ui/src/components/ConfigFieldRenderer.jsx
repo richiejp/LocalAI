@@ -8,6 +8,7 @@ import CodeEditor from './CodeEditor'
 import StructuredCodeEditor from './StructuredCodeEditor'
 import PIIPatternListEditor from './PIIPatternListEditor'
 import RouterCandidatesEditor from './RouterCandidatesEditor'
+import RouterPoliciesEditor from './RouterPoliciesEditor'
 
 // Map autocomplete provider to SearchableModelSelect capability
 const PROVIDER_TO_CAPABILITY = {
@@ -359,10 +360,9 @@ export default function ConfigFieldRenderer({ field, value, onChange, onRemove, 
     )
   }
 
-  // Router candidates — structured editor for the array of
-  // { label, model, rules, description }. Uses the model picker for
-  // each candidate's downstream model so admins don't have to type
-  // names from memory.
+  // Router candidates — routing table editor. Each row is
+  // {model, labels[]}; the labels picker reads from router.policies
+  // via FormContext so candidate labels match the declared vocabulary.
   if (component === 'router-candidates') {
     return (
       <div style={{ padding: 'var(--spacing-sm) 0', borderBottom: '1px solid var(--color-border-subtle)' }}>
@@ -373,6 +373,23 @@ export default function ConfigFieldRenderer({ field, value, onChange, onRemove, 
           </div>
         </div>
         <RouterCandidatesEditor value={value} onChange={handleChange} />
+      </div>
+    )
+  }
+
+  // Router policies — label vocabulary editor. Each row is
+  // {label, description}; the description ends up verbatim in the
+  // routing system prompt sent to the classifier model.
+  if (component === 'router-policies') {
+    return (
+      <div style={{ padding: 'var(--spacing-sm) 0', borderBottom: '1px solid var(--color-border-subtle)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+          <div>
+            <div style={{ fontSize: '0.875rem', fontWeight: 500 }}><FieldLabel field={field} /></div>
+            <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', marginTop: 2 }}>{description}</div>
+          </div>
+        </div>
+        <RouterPoliciesEditor value={value} onChange={handleChange} />
       </div>
     )
   }

@@ -44,6 +44,15 @@ service Backend {
   // other unformatted PII that regex misses.
   rpc TokenClassify(TokenClassifyRequest) returns (TokenClassifyResponse) {}
 
+  // Score evaluates the model's joint log-probability of each
+  // supplied candidate continuation given a shared prompt. The
+  // prompt's KV cache is computed once and reused across candidates.
+  // Used for routing-policy multi-label classification, reranking,
+  // calibrated confidence, and reward-model scoring — any task where
+  // the consumer wants the model's confidence in a pre-specified
+  // continuation rather than a generated one.
+  rpc Score(ScoreRequest) returns (ScoreResponse) {}
+
   rpc GetMetrics(MetricsRequest) returns (MetricsResponse);
 
   rpc VAD(VADRequest) returns (VADResponse) {}
@@ -114,6 +123,48 @@ message TokenClassifyEntity {
 
 message TokenClassifyResponse {
   repeated TokenClassifyEntity entities = 1;
+}
+
+// ScoreRequest carries one shared prompt and one or more continuations
+// to score against it. The backend tokenises the prompt once and reuses
+// the resulting KV cache across all candidates in this request.
+message ScoreRequest {
+  string prompt = 1;
+  repeated string candidates = 2;
+  // Return per-token logprobs for each candidate when true. Default
+  // false to keep the wire response small; the joint log_prob field
+  // covers the common ranking case.
+  bool include_token_logprobs = 3;
+  // When true, the response also populates length_normalized_log_prob
+  // (joint log-prob divided by candidate token count). Useful when
+  // candidates differ in length and the consumer wants a per-token
+  // measure comparable across them (PMI-style scoring).
+  bool length_normalize = 4;
+}
+
+// CandidateScore is one row in the ScoreResponse, matching by index
+// the candidate in ScoreRequest.candidates.
+message CandidateScore {
+  // Sum of log P(token_i | prompt, candidate_token_<i) across the
+  // candidate's tokens. The primary ranking signal.
+  double log_prob = 1;
+  // log_prob / num_tokens — populated when length_normalize=true on
+  // the request.
+  double length_normalized_log_prob = 2;
+  // Per-token detail — populated when include_token_logprobs=true.
+  repeated TokenLogProb tokens = 3;
+  // Number of tokens the backend tokenised this candidate into, after
+  // any backend-specific normalisation (e.g. leading-space handling).
+  int32 num_tokens = 4;
+}
+
+message TokenLogProb {
+  string token = 1;
+  double log_prob = 2;
+}
+
+message ScoreResponse {
+  repeated CandidateScore candidates = 1;
 }
 
 message RerankRequest {

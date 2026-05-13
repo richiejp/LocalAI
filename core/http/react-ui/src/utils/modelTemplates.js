@@ -114,27 +114,21 @@ const MODEL_TEMPLATES = [
     id: 'router',
     label: 'Routing Model',
     icon: 'fa-route',
-    description: 'Dispatch requests to different downstream models based on prompt features. Pre-seeded with a feature classifier and two candidates — fill in candidate model names and the fallback to make it live.',
-    // router.candidates is pre-seeded with two empty-rule entries so
-    // the editor renders a working candidate list out of the box.
-    // Admins fill in the candidate model names and the fallback;
-    // adjust rules (max_prompt_length / requires_code / etc.) or
-    // switch to "knn" / "llm" classifiers from the editor.
+    description: 'Score-classifier router with three example policies and two candidates. Fill in the classifier_model (Arch-Router-1.5B recommended), the per-candidate downstream models, and the fallback. The L2 embedding cache is opt-in via the Routing section.',
     fields: {
       'name': 'smart-router',
-      'router.classifier': 'feature',
+      'router.classifier': 'score',
+      'router.classifier_model': '',
       'router.fallback': '',
+      'router.activation_threshold': 0.40,
+      'router.policies': [
+        { label: 'code-generation', description: 'writing, debugging, reading, or explaining code in any programming language' },
+        { label: 'casual-chat', description: 'small talk, greetings, jokes, or general conversation with no specific task' },
+        { label: 'math-reasoning', description: 'arithmetic, equations, percentage calculations, or step-by-step word problems' },
+      ],
       'router.candidates': [
-        {
-          label: 'code',
-          model: '',
-          rules: { requires_code: true },
-        },
-        {
-          label: 'chat',
-          model: '',
-          rules: {},
-        },
+        { model: '', labels: ['casual-chat'] },
+        { model: '', labels: ['code-generation', 'casual-chat', 'math-reasoning'] },
       ],
     },
   },

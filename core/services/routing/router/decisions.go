@@ -17,11 +17,12 @@ type DecisionRecord struct {
 	RouterModel   string        `json:"router_model"`   // The smart-router model name the client asked for.
 	RequestedModel string       `json:"requested_model"`// Same as RouterModel for now; reserved for chained routers.
 	ServedModel   string        `json:"served_model"`   // The candidate the classifier picked.
-	Classifier    string        `json:"classifier"`     // Classifier.Name(), e.g. "feature".
+	Classifier    string        `json:"classifier"`     // Classifier.Name(), e.g. "score".
 	Label         string        `json:"label"`
 	Score         float64       `json:"score"`
 	LatencyMs     int64         `json:"latency_ms"`
-	Cached        bool          `json:"cached"`         // Reserved — decision cache lands later.
+	Cached        bool          `json:"cached"`         // True when the decision came from the L2 embedding cache.
+	CacheSimilarity float64     `json:"cache_similarity,omitempty"` // Cosine similarity of the cache hit, 0 when not cached.
 	CreatedAt     time.Time     `json:"created_at"`
 }
 

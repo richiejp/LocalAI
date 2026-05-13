@@ -72,7 +72,7 @@ proxy:
 
 # PII filtering defaults to ON for proxy-* backends. Override by setting
 # pii.enabled: false explicitly. Per-pattern action overrides go in
-# pii.patterns; see the Middleware admin page or features/middleware.md.
+# pii.patterns; see the Middleware admin page or the Middleware feature doc.
 pii:
   enabled: true
 ```
@@ -128,31 +128,37 @@ proxy:
 
 ## Combining with the intelligent router
 
-A router model can spread traffic across local and cloud candidates:
+A router model can spread traffic across local and cloud candidates. The
+score classifier reads the policy descriptions and routes per request:
 
 ```yaml
 name: smart-router
-backend: virtual
 router:
-  classifier: feature
+  classifier: score
+  classifier_model: arch-router-1.5b
   fallback: qwen-3-7b-local
-  candidates:
-    - label: simple
-      model: qwen-3-7b-local
-      rules:
-        max_prompt_length: 2000
-    - label: complex
-      model: claude-sonnet-proxy
-      rules:
-        min_prompt_length: 2000
+  activation_threshold: 0.40
+  policies:
+    - label: casual
+      description: small talk, greetings, short answers
     - label: code
-      model: gpt-4o-proxy
-      rules:
-        requires_code: true
+      description: writing or debugging code in any programming language
+    - label: heavy-reasoning
+      description: long-form analysis, complex math, multi-step reasoning
+  candidates:
+    - model: qwen-3-7b-local
+      labels: [casual]
+    - model: gpt-4o-proxy
+      labels: [casual, code]
+    - model: claude-sonnet-proxy
+      labels: [casual, code, heavy-reasoning]
 ```
 
 The router rewrites `input.Model` to the chosen candidate; per-model PII,
 ACLs, and the cloud-proxy fork all run against the resolved target.
+
+See [Middleware: PII filtering and intelligent routing]({{< relref "middleware.md" >}})
+for the full router and PII-filter reference.
 
 ## Limitations in the MVP
 

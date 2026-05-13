@@ -1,14 +1,14 @@
 // Package router holds the routing module's classifier interface and
-// rule/feature/knn/llm implementations.
+// the Score implementation.
 //
 // The dispatch architecture is: a "router model" in ModelConfig (one
 // with a Router block) gets matched at request time. The classifier
-// inspects the prompt and picks one of the candidate labels; the
-// surrounding middleware rewrites input.Model to the matched
-// candidate's model and falls back through the existing model
-// resolution path. This keeps ACL checks, disabled-state, and per-
-// model PII consistent — the router does *model* selection, nothing
-// else.
+// inspects the prompt and returns the set of policy labels it considers
+// active; the surrounding middleware picks the first candidate whose
+// labels are a superset of the active set, rewrites input.Model to that
+// candidate, and falls back through the existing model resolution path.
+// This keeps ACL checks, disabled-state, and per-model PII consistent —
+// the router does *model* selection, nothing else.
 //
 // The package deliberately has no dependency on core/http or
 // core/services — those wire the classifier in and feed it the request
@@ -23,45 +23,43 @@ import (
 )
 
 // Probe is the classifier's input — the parsed prompt content the
-// classifier needs to make a decision. Fields are populated by the
-// caller (the middleware does the schema-shape extraction); the
-// classifier never inspects the original request struct.
-//
-// Concrete classifiers may inspect any subset; the feature classifier
-// reads Prompt and HasCode, knn would embed Prompt, llm would feed
-// Prompt to a small model.
+// classifier needs to make a decision. Populated by the caller (the
+// middleware does the schema-shape extraction); the classifier never
+// inspects the original request struct.
 type Probe struct {
 	// Prompt is the merged user-visible text. For chat completions it
 	// is the concatenation of message contents (separated by newlines);
 	// for plain completions it is the raw prompt.
 	Prompt string
-
-	// HasCode is true when the prompt contains a triple-backtick fence
-	// or another strong code marker. The middleware computes it once
-	// so every classifier sees the same signal.
-	HasCode bool
 }
 
-// Decision is the classifier's output. Label is the candidate label
-// the caller looks up in the Router config. Score is classifier-
-// specific (rule-based: 1.0 always; knn: cosine similarity; llm:
-// log-prob); kept for the decision log so admins can spot uncertain
-// choices.
+// Decision is the classifier's output. Labels carries the SET of
+// policy labels the classifier considers active for this probe. The
+// surrounding middleware picks the first candidate whose Labels
+// superset the active label set; that lets one prompt activate multiple
+// policies and route to a model capable of all of them. Score is the
+// softmax probability of the top label — kept for the decision log so
+// admins can spot uncertain calls.
 type Decision struct {
-	Label   string        `json:"label"`
+	Labels  []string      `json:"labels"`
 	Score   float64       `json:"score"`
 	Latency time.Duration `json:"latency"`
+
+	// Cached is true when the decision came from the L2 embedding
+	// cache rather than a fresh classifier run. CacheSimilarity carries
+	// the cosine similarity of the cache hit (0 when not cached).
+	Cached          bool    `json:"cached,omitempty"`
+	CacheSimilarity float64 `json:"cache_similarity,omitempty"`
 }
 
 // Classifier is the entry point the middleware calls. The
-// implementation is responsible for honouring ctx cancellation —
-// long-running classifiers (llm) must abort when the request context
-// dies.
+// implementation honours ctx cancellation so long-running classifiers
+// abort when the request context dies.
 type Classifier interface {
 	Classify(ctx context.Context, p Probe) (Decision, error)
 	// Name is a stable identifier that ends up in RouterDecision rows
 	// — admins read this to know which classifier produced a given
-	// decision when more than one is configured across models.
+	// decision.
 	Name() string
 }
 
@@ -69,9 +67,13 @@ type Classifier interface {
 // classifier: field, the buildClassifier dispatch in the
 // middleware, and the strings each Classifier returns from Name().
 const (
-	ClassifierFeature = "feature"
-	ClassifierKNN     = "knn"
-	ClassifierLLM     = "llm"
+	// ClassifierScore is the only shipped classifier. It picks
+	// labels by asking the classifier model to score each policy
+	// label as a continuation of the routing prompt. Used with
+	// Arch-Router-style small router models (Qwen-2.5-1.5B-Instruct
+	// base, trained on policy-continuation). See router/score.go
+	// for the full rationale.
+	ClassifierScore = "score"
 )
 
 // LabelFallback is the synthetic label written to the decision

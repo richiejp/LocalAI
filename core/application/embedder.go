@@ -2,18 +2,19 @@ package application
 
 import (
 	"context"
+	"fmt"
+	"strings"
 
 	"github.com/mudler/LocalAI/core/backend"
 	"github.com/mudler/LocalAI/core/config"
 	"github.com/mudler/LocalAI/core/services/routing/router"
+	"github.com/mudler/LocalAI/pkg/grpc"
 	"github.com/mudler/LocalAI/pkg/model"
 	"github.com/mudler/LocalAI/pkg/store"
 )
 
 // adapterConfig resolves a model name to its runtime ModelConfig
-// for the router-side adapters, or nil when the name is unknown.
-// Centralised so EmbedderFactory and LLMCallerFactory share one
-// config-resolution path — adding a new adapter is a 3-line factory.
+// for the router-side adapter, or nil when the name is unknown.
 func (a *Application) adapterConfig(modelName string) *config.ModelConfig {
 	cfg, err := a.backendLoader.LoadModelConfigFileByNameDefaultOptions(modelName, a.applicationConfig)
 	if err != nil || cfg == nil {
@@ -22,11 +23,55 @@ func (a *Application) adapterConfig(modelName string) *config.ModelConfig {
 	return cfg
 }
 
-// EmbedderFactory returns a router.Embedder bound to the named
-// embedding model, or nil when the model is not loadable. Used by
-// the RouteModel middleware to wire the KNN classifier without
-// importing core/backend (which would create a cycle through
-// config → router → config).
+// ScorerFactory returns a router.Scorer bound to the named model, or
+// nil when the model is not loadable. The router uses this to obtain
+// joint log-probabilities of policy labels under the configured
+// classifier model — multi-label routing without asking the model to
+// emit a single argmax label (which off-the-shelf classifier-tuned
+// models like Arch-Router struggle with via grammar constraint).
+func (a *Application) ScorerFactory() func(modelName string) router.Scorer {
+	return func(modelName string) router.Scorer {
+		cfg := a.adapterConfig(modelName)
+		if cfg == nil {
+			return nil
+		}
+		return &modelScorer{
+			modelLoader: a.modelLoader,
+			modelConfig: cfg,
+			appConfig:   a.applicationConfig,
+		}
+	}
+}
+
+type modelScorer struct {
+	modelLoader *model.ModelLoader
+	modelConfig *config.ModelConfig
+	appConfig   *config.ApplicationConfig
+}
+
+func (m *modelScorer) Score(ctx context.Context, prompt string, candidates []string) ([]router.CandidateScore, error) {
+	fn, err := backend.ModelScore(prompt, candidates, backend.ScoreOptions{LengthNormalize: true}, m.modelLoader, *m.modelConfig, m.appConfig)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := fn(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]router.CandidateScore, len(raw))
+	for i, c := range raw {
+		out[i] = router.CandidateScore{
+			LogProb:                 c.LogProb,
+			LengthNormalizedLogProb: c.LengthNormalizedLogProb,
+			NumTokens:               c.NumTokens,
+		}
+	}
+	return out, nil
+}
+
+// EmbedderFactory returns a router.Embedder bound to the named model,
+// or nil when the model is not loadable. The L2 embedding cache uses
+// this to embed router probes before searching the vector store.
 func (a *Application) EmbedderFactory() func(modelName string) router.Embedder {
 	return func(modelName string) router.Embedder {
 		cfg := a.adapterConfig(modelName)
@@ -41,120 +86,74 @@ func (a *Application) EmbedderFactory() func(modelName string) router.Embedder {
 	}
 }
 
-// modelEmbedder is a thin adapter from router.Embedder to
-// core/backend.ModelEmbedding.
 type modelEmbedder struct {
 	modelLoader *model.ModelLoader
 	modelConfig *config.ModelConfig
 	appConfig   *config.ApplicationConfig
 }
 
-// Embed blocks on the embedding-backend round-trip; the router
-// counts this as part of its classification latency.
-func (m *modelEmbedder) Embed(_ context.Context, text string) ([]float32, error) {
-	fn, err := backend.ModelEmbedding(text, nil, m.modelLoader, *m.modelConfig, m.appConfig)
+func (e *modelEmbedder) Embed(ctx context.Context, text string) ([]float32, error) {
+	fn, err := backend.ModelEmbedding(text, nil, e.modelLoader, *e.modelConfig, e.appConfig)
 	if err != nil {
 		return nil, err
 	}
 	return fn()
 }
 
-// LLMCallerFactory returns a router.LLMCaller bound to the named
-// instruct model, or nil when the model is not loadable.
-func (a *Application) LLMCallerFactory() func(modelName string) router.LLMCaller {
-	return func(modelName string) router.LLMCaller {
-		cfg := a.adapterConfig(modelName)
-		if cfg == nil {
+// VectorStoreFactory returns a router.VectorStore bound to the named
+// collection. The local-store backend is loaded once per collection
+// name; each router model gets its own backend process via the
+// model.ModelLoader cache keyed by storeName.
+func (a *Application) VectorStoreFactory() func(storeName string) router.VectorStore {
+	return func(storeName string) router.VectorStore {
+		if storeName == "" {
 			return nil
 		}
-		return &modelLLMCaller{
-			modelLoader:  a.modelLoader,
-			configLoader: a.backendLoader,
-			modelConfig:  cfg,
-			appConfig:    a.applicationConfig,
+		return &localVectorStore{
+			appConfig:   a.applicationConfig,
+			modelLoader: a.modelLoader,
+			storeName:   storeName,
 		}
 	}
 }
 
-type modelLLMCaller struct {
-	modelLoader  *model.ModelLoader
-	configLoader *config.ModelConfigLoader
-	modelConfig  *config.ModelConfig
-	appConfig    *config.ApplicationConfig
+type localVectorStore struct {
+	appConfig   *config.ApplicationConfig
+	modelLoader *model.ModelLoader
+	storeName   string
 }
 
-// VectorStoreFactory returns a router.VectorStore bound to a named
-// store-backend model + namespace pair, or nil when the backend is
-// not loadable. The router package consumes this through the
-// VectorStoreFactory middleware-level alias so it stays free of
-// core/backend imports. Empty backendName defaults to the in-process
-// local-store gRPC backend (matches what /v1/stores uses).
-func (a *Application) VectorStoreFactory() func(backendName, namespace string) router.VectorStore {
-	return func(backendName, namespace string) router.VectorStore {
-		return &routerVectorStore{
-			ml:        a.modelLoader,
-			appConfig: a.applicationConfig,
-			storeName: namespace,
-			backend:   backendName,
+func (s *localVectorStore) backend(ctx context.Context) (grpc.Backend, error) {
+	_ = ctx // local-store load is synchronous; ctx unused here for symmetry with the interface.
+	return backend.StoreBackend(s.modelLoader, s.appConfig, s.storeName, "")
+}
+
+func (s *localVectorStore) Search(ctx context.Context, vec []float32) (float64, []byte, bool, error) {
+	be, err := s.backend(ctx)
+	if err != nil {
+		return 0, nil, false, fmt.Errorf("vector store load: %w", err)
+	}
+	_, values, similarities, err := store.Find(ctx, be, vec, 1)
+	if err != nil {
+		// local-store's Find returns "existing length is -1" when no
+		// keys have been inserted yet. Surface that as a clean miss so
+		// the cache layer doesn't treat it as a failure and skip the
+		// follow-up Insert.
+		if strings.Contains(err.Error(), "existing length is -1") {
+			return 0, nil, false, nil
 		}
+		return 0, nil, false, fmt.Errorf("vector store find: %w", err)
 	}
+	if len(values) == 0 || len(similarities) == 0 {
+		return 0, nil, false, nil
+	}
+	return float64(similarities[0]), values[0], true, nil
 }
 
-// routerVectorStore is the adapter from router.VectorStore to
-// core/backend.StoreBackend + pkg/store helpers. The backend is
-// resolved lazily on every call rather than cached so a transient
-// load failure during the first Set retries on the next attempt,
-// matching the lazy-seed pattern in KNNClassifier.ensureSeeded.
-type routerVectorStore struct {
-	ml        *model.ModelLoader
-	appConfig *config.ApplicationConfig
-	storeName string
-	backend   string
-}
-
-func (r *routerVectorStore) Set(ctx context.Context, keys [][]float32, values [][]byte) error {
-	b, err := backend.StoreBackend(r.ml, r.appConfig, r.storeName, r.backend)
+func (s *localVectorStore) Insert(ctx context.Context, vec []float32, payload []byte) error {
+	be, err := s.backend(ctx)
 	if err != nil {
-		return err
+		return fmt.Errorf("vector store load: %w", err)
 	}
-	return store.SetCols(ctx, b, keys, values)
-}
-
-func (r *routerVectorStore) Find(ctx context.Context, query []float32, topK int) ([][]byte, []float32, error) {
-	b, err := backend.StoreBackend(r.ml, r.appConfig, r.storeName, r.backend)
-	if err != nil {
-		return nil, nil, err
-	}
-	_, values, sims, err := store.Find(ctx, b, query, topK)
-	if err != nil {
-		return nil, nil, err
-	}
-	return values, sims, nil
-}
-
-func (m *modelLLMCaller) Complete(ctx context.Context, system, user string) (string, error) {
-	prompt := system + "\n\nUser: " + user + "\n\nLabel:"
-	fn, err := backend.ModelInferenceFunc(
-		ctx,
-		prompt,
-		nil,
-		nil, nil, nil,
-		m.modelLoader,
-		m.modelConfig,
-		m.configLoader,
-		m.appConfig,
-		nil,
-		"", "",
-		nil, nil,
-		nil,
-		nil,
-	)
-	if err != nil {
-		return "", err
-	}
-	resp, err := fn()
-	if err != nil {
-		return "", err
-	}
-	return resp.Response, nil
+	return store.SetSingle(ctx, be, vec, payload)
 }

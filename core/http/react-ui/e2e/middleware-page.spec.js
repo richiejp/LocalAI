@@ -25,17 +25,36 @@ const MOCK_STATUS = {
     models: [
       {
         name: 'smart-router',
-        classifier: 'feature',
+        classifier: 'score',
         fallback: 'qwen-7b',
-        candidates: [
-          { label: 'small', model: 'qwen-3b', rules: { max_prompt_length: 50, min_prompt_length: 0, requires_code: false } },
-          { label: 'code', model: 'qwen-coder', rules: { max_prompt_length: 0, min_prompt_length: 0, requires_code: true } },
-          { label: 'large', model: 'qwen-32b', rules: { max_prompt_length: 0, min_prompt_length: 0, requires_code: false } },
+        policies: [
+          { label: 'casual-chat', description: 'small talk' },
+          { label: 'code-generation', description: 'writing or debugging code' },
         ],
+        candidates: [
+          { model: 'qwen-3b', labels: ['casual-chat'] },
+          { model: 'qwen-coder', labels: ['code-generation', 'casual-chat'] },
+        ],
+        embedding_cache: {
+          embedding_model: 'nomic-embed-text-v1.5',
+          similarity_threshold: 0.80,
+          confidence_threshold: 0.60,
+          store_name: '',
+          stats: {
+            hits: 31,
+            misses: 1,
+            near_misses: 56,
+            low_confidence: 29,
+            embedder_errors: 0,
+            store_errors: 0,
+            // peak [0.4, 0.6) for paraphrases, secondary in [0.8, 1.0) for near-exact matches
+            similarity_buckets: [0, 0, 0, 1, 22, 16, 3, 7, 19, 19],
+          },
+        },
       },
     ],
     recent_decision_count: 1,
-    available_classifiers: ['feature'],
+    available_classifiers: ['score'],
   },
 }
 
@@ -44,7 +63,8 @@ const MOCK_DECISIONS = {
     {
       id: 'rd_a1', correlation_id: 'corr-1', user_id: 'local',
       router_model: 'smart-router', requested_model: 'smart-router', served_model: 'qwen-3b',
-      classifier: 'feature', label: 'small', score: 1.0, latency_ms: 2, cached: false,
+      classifier: 'score', label: 'casual-chat', score: 0.91, latency_ms: 15,
+      cached: true, cache_similarity: 0.92,
       created_at: '2026-05-06T11:00:00Z',
     },
   ],
@@ -116,11 +136,51 @@ test.describe('Middleware page — admin in no-auth mode', () => {
     await page.getByRole('button', { name: /Routing/i }).click()
     // Active router model name visible.
     await expect(page.getByText('smart-router').first()).toBeVisible()
-    // Candidate model name visible (one of three).
+    // Candidate model names visible.
     await expect(page.getByText('qwen-coder').first()).toBeVisible()
-    // Decision row visible — label and served model.
-    await expect(page.getByText('small').first()).toBeVisible()
     await expect(page.getByText('qwen-3b').first()).toBeVisible()
+    // Decision row visible — label and served model.
+    await expect(page.getByText('casual-chat').first()).toBeVisible()
+  })
+
+  test('Routing tab renders embedding-cache stats and similarity histogram', async ({ page }) => {
+    await page.goto('/app/middleware')
+    await page.getByRole('button', { name: /Routing/i }).click()
+
+    // Embedding model name surfaces in the cache column.
+    await expect(page.getByText('nomic-embed-text-v1.5').first()).toBeVisible()
+
+    // Hit-rate badge: 31 hits / (31 + 56 + 1) = 35% rounded.
+    await expect(page.getByText(/35% hit/i).first()).toBeVisible()
+
+    // h/n/m counter row visible.
+    await expect(page.getByText(/31h\/56n\/1m/).first()).toBeVisible()
+
+    // Skipped (low-confidence) counter visible.
+    await expect(page.getByText(/29 skipped/).first()).toBeVisible()
+
+    // Threshold marker text matches the configured 0.80.
+    await expect(page.getByText(/sim ≥ 0\.8/).first()).toBeVisible()
+
+    // Histogram bars rendered with hover titles that include the
+    // bucket range and count. Bucket 4 (peak) has count 22; the
+    // <div> with that exact title is the structural assertion.
+    await expect(
+      page.locator('div[title="[0.4, 0.5): 22"]')
+    ).toBeVisible()
+    // Bucket 8 (just at threshold) has count 19.
+    await expect(
+      page.locator('div[title="[0.8, 0.9): 19"]')
+    ).toBeVisible()
+  })
+
+  test('Routing tab shows a cached decision with cache_similarity', async ({ page }) => {
+    await page.goto('/app/middleware')
+    await page.getByRole('button', { name: /Routing/i }).click()
+
+    // The decision row exposes the cached flag and the cosine that
+    // produced the hit so admins can correlate with the histogram.
+    await expect(page.getByText('corr-1')).toBeVisible()
   })
 
   test('Events tab renders rows but never the redacted content', async ({ page }) => {
@@ -198,8 +258,9 @@ test.describe('Middleware page — admin in no-auth mode', () => {
 
     // The Kind column header is present.
     await expect(page.locator('th').filter({ hasText: /^Kind$/ })).toBeVisible()
-    // At least one cell renders each of the three kinds.
-    await expect(page.getByText(/^pii$/i)).toBeVisible()
+    // At least one cell renders each of the three kinds. Scope to
+    // <span> elements so the "PII" filter button doesn't match.
+    await expect(page.locator('span').getByText(/^pii$/i).first()).toBeVisible()
     await expect(page.getByText(/^proxy connect$/i).first()).toBeVisible()
     await expect(page.getByText(/^proxy traffic$/i).first()).toBeVisible()
   })

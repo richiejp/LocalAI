@@ -198,104 +198,106 @@ func (c *ModelConfig) IsCloudProxy() bool {
 // config load to keep the dispatch graph acyclic and predictable. The
 // middleware also asserts depth ≤ 1 at runtime as a defensive check.
 type RouterConfig struct {
-	// Classifier picks the implementation. Today the only shipped
-	// classifier is "feature" — handcrafted rules over prompt length
-	// and content (code fences, math). "knn" and "llm" are reserved
-	// for future slices and rejected at config load when used.
+	// Classifier picks the implementation. Only "score" ships today:
+	// it asks the classifier model to score every Policy label as a
+	// continuation of the routing prompt and reads off the
+	// distribution. Empty defaults to "score".
 	Classifier string `yaml:"classifier,omitempty" json:"classifier,omitempty"`
 
-	// Candidates is the routing table. The classifier's Decision.Label
-	// must match one of these labels; if not, Fallback runs (or the
-	// request errors when Fallback is empty).
+	// Policies is the label vocabulary the classifier scores over.
+	// Each policy carries a natural-language description that ends up
+	// in the system prompt the classifier model sees — short, action-
+	// oriented sentences work best ("writing or debugging code",
+	// "small talk", ...). The Score classifier picks the subset of
+	// labels whose softmax probability passes ActivationThreshold.
+	Policies []RouterPolicy `yaml:"policies,omitempty" json:"policies,omitempty"`
+
+	// Candidates is the routing table — each entry binds a downstream
+	// model to a set of labels it can serve. The middleware picks the
+	// FIRST candidate whose Labels are a superset of the active label
+	// set from the classifier. Admins order this list smallest →
+	// largest so a query that needs one label routes to the smallest
+	// capable model, while a query that needs multiple falls to a
+	// bigger candidate that covers them all.
 	Candidates []RouterCandidate `yaml:"candidates,omitempty" json:"candidates,omitempty"`
 
-	// Fallback is the model used when the classifier returns no match
-	// or the matched label can't be resolved. Empty fallback means
-	// router failures bubble up as 500 — fail-fast, not silent-bypass.
+	// Fallback is the model used when no candidate matches the active
+	// label set, or when the classifier returns nothing above
+	// threshold. Empty fallback means router failures bubble up as
+	// 500 — fail-fast, not silent-bypass.
 	Fallback string `yaml:"fallback,omitempty" json:"fallback,omitempty"`
 
-	// EmbeddingModel names the model the KNN classifier uses to
-	// embed both probe prompts and candidate exemplars. Required
-	// when classifier is "knn"; ignored otherwise. The model must
-	// be a callable embeddings model (FLAG_EMBEDDINGS).
-	EmbeddingModel string `yaml:"embedding_model,omitempty" json:"embedding_model,omitempty"`
-
-	// StoreModel names the vector-store backend the KNN classifier
-	// uses to persist and search exemplar embeddings. Empty
-	// defaults to the in-process local-store gRPC backend; any
-	// pluggable store backend (qdrant, pinecone, ...) works the
-	// same way. Each router model gets its own namespace under
-	// the chosen backend so exemplar sets stay isolated. Ignored
-	// when classifier != "knn".
-	StoreModel string `yaml:"store_model,omitempty" json:"store_model,omitempty"`
-
-	// MinScore is the cosine-similarity floor below which the KNN
-	// classifier returns no-match — the surrounding middleware
-	// then falls back. 0 disables the floor (every nearest
-	// exemplar wins regardless of similarity).
-	MinScore float64 `yaml:"min_score,omitempty" json:"min_score,omitempty"`
-
-	// ExemplarsFile points at an optional JSONL dataset produced by
-	// a benchmarking pipeline. Each row is {query, best_model,
-	// scores?, embedding?}; the KNN classifier loads rows whose
-	// best_model matches a candidate and uses the candidate's
-	// label. Relative paths resolve against the models directory.
-	// Combine with hand-written candidate.examples — both sources
-	// seed the same store.
-	ExemplarsFile string `yaml:"exemplars_file,omitempty" json:"exemplars_file,omitempty"`
-
-	// ClassifierModel names the LLM the "llm" classifier asks for
-	// the routing decision. Required when classifier is "llm";
-	// ignored otherwise. Should be a small, fast instruct model.
+	// ClassifierModel names the model the Score classifier scores
+	// against (Arch-Router-1.5B is the canonical choice).
 	ClassifierModel string `yaml:"classifier_model,omitempty" json:"classifier_model,omitempty"`
 
-	// ClassifierCacheSize bounds the LLM classifier's per-prompt
-	// memo cache. 0 disables the cache (every probe pays the LLM
-	// round-trip). Default 1024 when classifier is "llm".
+	// ClassifierCacheSize bounds the per-prompt memo cache that
+	// amortises the classifier round-trip across repeat probes.
+	// 0 disables the cache. Default 1024.
 	ClassifierCacheSize int `yaml:"classifier_cache_size,omitempty" json:"classifier_cache_size,omitempty"`
+
+	// ActivationThreshold is the softmax-probability floor a policy
+	// must clear to be considered "active" for the request. 0
+	// defaults to a sensible value (~0.15) inside the classifier.
+	// Higher → narrower routes (single-label dominant); lower →
+	// more multi-label activations.
+	ActivationThreshold float64 `yaml:"activation_threshold,omitempty" json:"activation_threshold,omitempty"`
+
+	// EmbeddingCache configures the L2 cache that maps prompt
+	// embeddings to past decisions, so semantically-similar prompts
+	// reuse a classification instead of re-running the classifier
+	// model. Omit the block to disable. See router/embedding_cache.go.
+	EmbeddingCache *EmbeddingCacheConfig `yaml:"embedding_cache,omitempty" json:"embedding_cache,omitempty"`
 }
 
-// RouterCandidate names a downstream model the classifier can pick.
-// Rules is the classifier-specific selector — the feature classifier
-// reads MaxLength / RequiresCode etc.; the KNN classifier reads
-// Examples; the LLM classifier reads Description.
+// EmbeddingCacheConfig configures the L2 embedding-similarity decision
+// cache. Pairs naturally with a larger / slower classifier model: the
+// classifier round-trip is amortised across paraphrases of the same
+// intent. The cache uses the standard /v1/embeddings backend for
+// vector generation and the local-store gRPC surface for KNN search.
+type EmbeddingCacheConfig struct {
+	// EmbeddingModel names the loaded LocalAI model used to embed
+	// router prompts. Required when the cache is enabled. Any model
+	// that supports the Embeddings gRPC primitive works;
+	// nomic-embed-text-v1.5 is the recommended default.
+	EmbeddingModel string `yaml:"embedding_model" json:"embedding_model"`
+
+	// SimilarityThreshold is the cosine-similarity floor a cache
+	// candidate must clear to be treated as a hit. 0 picks the
+	// package default (0.80). Higher → fewer false hits, higher miss
+	// rate; lower → more aggressive sharing across paraphrases.
+	SimilarityThreshold float64 `yaml:"similarity_threshold,omitempty" json:"similarity_threshold,omitempty"`
+
+	// ConfidenceThreshold is the minimum classifier top-label
+	// probability for a decision to be inserted into the cache. 0
+	// picks the package default (0.60). Uncertain decisions are not
+	// cached so they can't poison future paraphrases.
+	ConfidenceThreshold float64 `yaml:"confidence_threshold,omitempty" json:"confidence_threshold,omitempty"`
+
+	// StoreName overrides the local-store collection name used for
+	// this router's cache. Empty defaults to "router-cache-<router>"
+	// where <router> is the parent model name. Useful when two
+	// router models should share a cache (rare).
+	StoreName string `yaml:"store_name,omitempty" json:"store_name,omitempty"`
+}
+
+// RouterPolicy is one entry in the label vocabulary. The label string
+// is what the classifier model emits and what candidates reference in
+// their Labels field; the description is the natural-language hint
+// fed to the classifier so it can match user intent against the label
+// space.
+type RouterPolicy struct {
+	Label       string `yaml:"label" json:"label"`
+	Description string `yaml:"description" json:"description"`
+}
+
+// RouterCandidate names a downstream model and the policy labels it
+// is willing to serve. Labels are matched as a set: the middleware
+// picks the first candidate whose Labels is a superset of the
+// classifier's active set.
 type RouterCandidate struct {
-	Label string             `yaml:"label" json:"label"`
-	Model string             `yaml:"model" json:"model"`
-	Rules RouterCandidateRule `yaml:"rules,omitempty" json:"rules,omitempty"`
-	// Description is the natural-language hint the LLM classifier
-	// shows alongside this label when asking the small LLM to pick.
-	// Ignored by the feature and KNN classifiers.
-	Description string `yaml:"description,omitempty" json:"description,omitempty"`
-}
-
-// RouterCandidateRule is the union of selectors the feature classifier
-// understands. The rule that matches FIRST in the candidate list wins;
-// candidates with no rule fields populated act as "match anything".
-//
-// Adding a new selector here without updating feature.go would silently
-// match nothing — the classifier ignores unknown rule fields. We pay
-// that cost (vs. a discriminated union) because YAML schemas are read
-// in many places and a flat shape is easier to template-fill from the
-// admin UI.
-type RouterCandidateRule struct {
-	// MaxPromptLength matches when the joined prompt is at most N
-	// characters. Inclusive. 0 means no upper bound.
-	MaxPromptLength int `yaml:"max_prompt_length,omitempty" json:"max_prompt_length,omitempty"`
-	// MinPromptLength matches when the joined prompt is at least N
-	// characters. Inclusive. 0 means no lower bound.
-	MinPromptLength int `yaml:"min_prompt_length,omitempty" json:"min_prompt_length,omitempty"`
-	// RequiresCode matches only when the prompt contains a triple-
-	// backtick code fence. Useful for routing code-heavy chats to a
-	// stronger model.
-	RequiresCode bool `yaml:"requires_code,omitempty" json:"requires_code,omitempty"`
-
-	// Examples is the exemplar set the KNN classifier uses for this
-	// candidate's label — short prompts that should route to this
-	// candidate. Ignored by the feature classifier. The KNN
-	// classifier embeds every example at startup and picks the
-	// candidate whose nearest exemplar matches the probe.
-	Examples []string `yaml:"examples,omitempty" json:"examples,omitempty"`
+	Model  string   `yaml:"model" json:"model"`
+	Labels []string `yaml:"labels" json:"labels"`
 }
 
 // HasRouter returns true when the model declares a router config with

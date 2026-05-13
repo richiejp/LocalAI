@@ -119,3 +119,9 @@ func (c *ConnectionEvictingClient) TokenClassify(ctx context.Context, in *pb.Tok
 	c.checkErr(err)
 	return result, err
 }
+
+func (c *ConnectionEvictingClient) Score(ctx context.Context, in *pb.ScoreRequest, opts ...ggrpc.CallOption) (*pb.ScoreResponse, error) {
+	result, err := c.Backend.Score(ctx, in, opts...)
+	c.checkErr(err)
+	return result, err
+}

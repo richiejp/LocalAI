@@ -72,6 +72,7 @@ type Application struct {
 	// /api/middleware/status so the admin UI can surface the cause.
 	mitmHostConflicts atomic.Pointer[map[string][]string]
 	routerDecisions    router.DecisionStore
+	routerRegistry     *router.Registry
 	admissionLimiter   *admission.Limiter
 	watchdogMutex      sync.Mutex
 	watchdogStop       chan bool
@@ -286,6 +287,14 @@ func (a *Application) MITMHostOwners() map[string]string {
 // log write in that case but still rewrites requests.
 func (a *Application) RouterDecisions() router.DecisionStore {
 	return a.routerDecisions
+}
+
+// RouterClassifierRegistry returns the process-wide classifier cache.
+// Shared between the OpenAI and Anthropic route middlewares so the
+// admin stats endpoint sees every live classifier — and so a
+// classifier built on the OpenAI route is reused on Anthropic.
+func (a *Application) RouterClassifierRegistry() *router.Registry {
+	return a.routerRegistry
 }
 
 // AdmissionLimiter returns the per-model admission limiter. The

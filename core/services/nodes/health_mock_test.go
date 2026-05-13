@@ -265,6 +265,12 @@ func (c *fakeBackendClient) StopQuantization(_ context.Context, _ *pb.Quantizati
 func (c *fakeBackendClient) Free(_ context.Context) error {
 	return nil
 }
+func (c *fakeBackendClient) TokenClassify(_ context.Context, _ *pb.TokenClassifyRequest, _ ...ggrpc.CallOption) (*pb.TokenClassifyResponse, error) {
+	return nil, nil
+}
+func (c *fakeBackendClient) Score(_ context.Context, _ *pb.ScoreRequest, _ ...ggrpc.CallOption) (*pb.ScoreResponse, error) {
+	return nil, nil
+}
 
 // --- fakeBackendClientFactory ---
 

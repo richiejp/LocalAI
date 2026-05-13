@@ -229,6 +229,9 @@ func New(opts ...config.AppOption) (*Application, error) {
 	if !options.DisableStats {
 		application.routerDecisions = router.NewMemoryDecisionStore(0)
 	}
+	// Process-wide classifier cache shared across all route middlewares so
+	// the embedding-cache stats endpoint sees a single source of truth.
+	application.routerRegistry = router.NewRegistry()
 
 	// Subsystem 5: admission control. Limiter is always wired so a
 	// model that gains a limits: block via gallery install or YAML

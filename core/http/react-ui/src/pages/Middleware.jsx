@@ -426,6 +426,7 @@ function RoutingTab({ status, decisions }) {
                 <th style={{ width: 160 }}>Model</th>
                 <th style={{ width: 110 }}>Classifier</th>
                 <th>Candidates</th>
+                <th style={{ width: 200 }}>Embedding cache</th>
                 <th style={{ width: 140 }}>Fallback</th>
               </tr>
             </thead>
@@ -437,20 +438,14 @@ function RoutingTab({ status, decisions }) {
                   <td style={{ fontSize: '0.75rem' }}>
                     {(m.candidates || []).map((c, i) => (
                       <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 6, fontFamily: 'var(--font-mono)' }}>
-                        <span style={{ minWidth: 60, color: 'var(--color-primary)' }}>{c.label}</span>
+                        <span style={{ minWidth: 100, color: 'var(--color-primary)' }}>{(c.labels || []).join(', ') || '—'}</span>
                         <span style={{ color: 'var(--color-text-muted)' }}>→</span>
                         <span>{c.model}</span>
-                        {(c.rules?.max_prompt_length || c.rules?.min_prompt_length || c.rules?.requires_code) && (
-                          <span style={{ fontSize: '0.6875rem', color: 'var(--color-text-muted)', marginLeft: 6 }}>
-                            ({[
-                              c.rules.requires_code && 'code',
-                              c.rules.max_prompt_length > 0 && `≤${c.rules.max_prompt_length}c`,
-                              c.rules.min_prompt_length > 0 && `≥${c.rules.min_prompt_length}c`,
-                            ].filter(Boolean).join(', ')})
-                          </span>
-                        )}
                       </div>
                     ))}
+                  </td>
+                  <td style={{ fontSize: '0.75rem' }}>
+                    <RouterCacheCell cache={m.embedding_cache} />
                   </td>
                   <td style={{ fontFamily: 'var(--font-mono)', fontSize: '0.75rem', color: 'var(--color-text-muted)' }}>
                     {m.fallback || '—'}
@@ -885,6 +880,76 @@ function EventsTab({ events }) {
               ))}
             </tbody>
           </table>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// RouterCacheCell renders the L2 embedding-cache state for one router
+// model. Shows nothing for routers without an embedding_cache: block;
+// for configured caches, shows hit/miss/near-miss counters plus a
+// similarity histogram with a marker at the configured threshold so
+// admins can tell at a glance whether the threshold is well-placed.
+function RouterCacheCell({ cache }) {
+  if (!cache) {
+    return <span style={{ color: 'var(--color-text-muted)' }}>—</span>
+  }
+  const stats = cache.stats || {}
+  const hits = stats.hits || 0
+  const misses = stats.misses || 0
+  const nearMisses = stats.near_misses || 0
+  const lowConf = stats.low_confidence || 0
+  const totalLookups = hits + misses + nearMisses
+  const hitRate = totalLookups > 0 ? Math.round((hits / totalLookups) * 100) : null
+  const errors = (stats.embedder_errors || 0) + (stats.store_errors || 0)
+  const buckets = stats.similarity_buckets || []
+  const bucketMax = buckets.length ? Math.max(...buckets, 1) : 1
+  const threshold = cache.similarity_threshold || 0.80
+  const thresholdBucket = Math.max(0, Math.min(9, Math.floor(threshold * 10)))
+  return (
+    <div style={{ fontFamily: 'var(--font-mono)', fontSize: '0.6875rem', lineHeight: 1.3 }}>
+      <div style={{ fontWeight: 600 }}>{cache.embedding_model}</div>
+      <div style={{ color: 'var(--color-text-muted)' }}>
+        {totalLookups === 0 ? (
+          <span>no traffic yet</span>
+        ) : (
+          <>
+            <span style={{ color: hitRate >= 50 ? 'var(--color-success, #2da44e)' : 'var(--color-text-muted)' }}>
+              {hitRate}% hit
+            </span>
+            <span> · {hits}h/{nearMisses}n/{misses}m</span>
+            {lowConf > 0 && <span> · {lowConf} skipped</span>}
+            {errors > 0 && <span style={{ color: 'var(--color-warning, #d97706)' }}> · {errors} err</span>}
+          </>
+        )}
+      </div>
+      {buckets.length === 10 && buckets.some(v => v > 0) && (
+        <div title={`Cosine similarity histogram, threshold=${threshold}`}
+             style={{ display: 'flex', alignItems: 'flex-end', gap: 1, marginTop: 4, height: 18 }}>
+          {buckets.map((count, i) => {
+            const h = bucketMax > 0 ? Math.max(2, Math.round((count / bucketMax) * 18)) : 2
+            const inHitZone = i >= thresholdBucket
+            return (
+              <div
+                key={i}
+                title={`[${(i/10).toFixed(1)}, ${((i+1)/10).toFixed(1)}): ${count}`}
+                style={{
+                  width: 6,
+                  height: h,
+                  background: count === 0
+                    ? 'var(--color-border, #e5e7eb)'
+                    : inHitZone
+                      ? 'var(--color-success, #2da44e)'
+                      : 'var(--color-warning, #d97706)',
+                  opacity: count === 0 ? 0.3 : 1,
+                }}
+              />
+            )
+          })}
+          <div style={{ marginLeft: 4, fontSize: '0.625rem', color: 'var(--color-text-muted)' }}>
+            sim ≥ {threshold}
+          </div>
         </div>
       )}
     </div>
