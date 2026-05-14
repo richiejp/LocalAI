@@ -8,6 +8,7 @@ import (
 	"github.com/mudler/LocalAI/core/application"
 	"github.com/mudler/LocalAI/core/config"
 	"github.com/mudler/LocalAI/core/http/auth"
+	"github.com/mudler/LocalAI/core/http/endpoints/localai"
 	"github.com/mudler/LocalAI/core/services/routing/pii"
 )
 
@@ -30,6 +31,7 @@ func RegisterPIIRoutes(e *echo.Echo, app *application.Application) {
 		e.GET("/api/pii/patterns", stub)
 		e.GET("/api/pii/events", stub)
 		e.POST("/api/pii/test", stub)
+		e.POST("/api/pii/decide", stub)
 		e.POST("/api/pii/patterns/persist", stub)
 		return
 	}
@@ -120,6 +122,22 @@ func RegisterPIIRoutes(e *echo.Echo, app *application.Application) {
 			"blocked":    res.Blocked,
 			"local_only": res.LocalOnly,
 		})
+	})
+
+	// POST /api/pii/decide — programmatic PII decision oracle for
+	// external routers. Returns findings + suggested action without
+	// mutating the caller's request or recording an audit event.
+	// Production hot path — admin-only, matching /api/pii/events.
+	decideHandler := localai.PIIDecideEndpoint(app.PIIRedactor())
+	e.POST("/api/pii/decide", func(c echo.Context) error {
+		viewer := resolveUsageUser(c, app)
+		if viewer == nil {
+			return c.JSON(http.StatusUnauthorized, map[string]string{"error": "not authenticated"})
+		}
+		if viewer.Role != auth.RoleAdmin {
+			return c.JSON(http.StatusForbidden, map[string]string{"error": "admin access required"})
+		}
+		return decideHandler(c)
 	})
 
 	// PutPIIPatternActionEndpoint godoc

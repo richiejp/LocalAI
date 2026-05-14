@@ -483,3 +483,45 @@ type RouterDecideResponse struct {
 	// (0 when not cached).
 	CacheSimilarity float64 `json:"cache_similarity,omitempty"`
 }
+
+// PIIDecideRequest is the input for POST /api/pii/decide — the
+// programmatic PII-decision oracle. External routers call it before
+// dispatching a request to learn whether the content carries PII and
+// what action the configured pattern set would take. The endpoint
+// inspects the text and returns findings + a suggested action; it
+// does NOT mutate the input, record an audit event, or rewrite any
+// downstream request. The caller composes the decision with its own
+// policy (mask, block, route to local-only backends, allow).
+type PIIDecideRequest struct {
+	// Text is the user-visible content to inspect. Required.
+	Text string `json:"text"`
+}
+
+// PIIDecideResponse carries the redactor's findings.
+// SuggestedAction is derived from the action ordering used by the
+// internal redactor (block > route_local > mask > allow) so callers
+// don't need to replicate that logic.
+type PIIDecideResponse struct {
+	// Findings is one entry per matched span — pattern id, byte
+	// range, and audit-safe hash prefix (never the matched value).
+	Findings []PIIFinding `json:"findings"`
+	// SuggestedAction is the strongest action across all findings:
+	// "block", "route_local", "mask", or "allow" (no findings).
+	SuggestedAction string `json:"suggested_action"`
+	// RedactedPreview is the input with mask-action spans replaced
+	// by their placeholders. Identical to Text when no findings or
+	// when the strongest action is block/route_local (which don't
+	// rewrite content).
+	RedactedPreview string `json:"redacted_preview"`
+}
+
+// PIIFinding mirrors pii.Span on the wire. Pattern is the pattern id
+// that matched (e.g. "email"). HashPrefix is the first 8 chars of
+// sha256(matched value) — lets admins correlate recurring leaks
+// without recovering the value itself.
+type PIIFinding struct {
+	Start      int    `json:"start"`
+	End        int    `json:"end"`
+	Pattern    string `json:"pattern"`
+	HashPrefix string `json:"hash_prefix"`
+}
