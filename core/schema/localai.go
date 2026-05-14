@@ -430,3 +430,56 @@ type SettingsResponse struct {
 	Error   string `json:"error,omitempty"`
 	Message string `json:"message,omitempty"`
 }
+
+// RouterDecideRequest is the input for POST /api/router/decide — the
+// programmatic decision-oracle endpoint. Given the name of a router
+// model (a ModelConfig that carries a `router:` block) and a prompt,
+// the endpoint returns the classifier's label set plus the candidate
+// model the in-band RouteModel middleware would have chosen. The
+// endpoint does NOT rewrite any request, forward to a backend, or
+// record a row in the decision store — it is a pure decision oracle
+// for external routers that want LocalAI's classifier opinion without
+// committing LocalAI to handle the request.
+type RouterDecideRequest struct {
+	// Router is the name of the router model (a ModelConfig with a
+	// `router:` block). Required.
+	Router string `json:"router"`
+	// Input is the user-visible prompt text to classify. Required.
+	// Schema-shape extraction (chat-message concatenation, etc.) is
+	// the caller's responsibility — matches the Probe contract used
+	// by the in-band middleware.
+	Input string `json:"input"`
+}
+
+// RouterDecideResponse carries the classifier's decision plus the
+// resolved candidate. Mirrors router.Decision with the addition of
+// Candidate/Fallback so the caller learns which downstream model
+// would have served the request without re-implementing the
+// label-set → candidate match locally.
+type RouterDecideResponse struct {
+	// Router echoes the requested router model.
+	Router string `json:"router"`
+	// Classifier is the classifier name that produced the decision
+	// (e.g. "score").
+	Classifier string `json:"classifier"`
+	// Labels is the set of active policy labels.
+	Labels []string `json:"labels"`
+	// Candidate is the model that would be routed to. Empty when no
+	// candidate covers Labels AND no fallback is configured.
+	Candidate string `json:"candidate,omitempty"`
+	// Fallback is true when Candidate is the router's configured
+	// fallback because no candidate covered Labels. Lets callers
+	// distinguish "matched" from "fell back" without comparing names.
+	Fallback bool `json:"fallback,omitempty"`
+	// Score is the top label's softmax probability (the
+	// classifier-side confidence signal).
+	Score float64 `json:"score"`
+	// LatencyMs is the classifier's wall-clock cost.
+	LatencyMs int64 `json:"latency_ms"`
+	// Cached is true when the decision came from the L2 embedding
+	// cache rather than a fresh classifier run.
+	Cached bool `json:"cached,omitempty"`
+	// CacheSimilarity carries the cosine similarity of the cache hit
+	// (0 when not cached).
+	CacheSimilarity float64 `json:"cache_similarity,omitempty"`
+}

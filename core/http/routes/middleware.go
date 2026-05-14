@@ -10,6 +10,8 @@ import (
 	"github.com/mudler/LocalAI/core/application"
 	"github.com/mudler/LocalAI/core/config"
 	"github.com/mudler/LocalAI/core/http/auth"
+	"github.com/mudler/LocalAI/core/http/endpoints/localai"
+	"github.com/mudler/LocalAI/core/http/middleware"
 	"github.com/mudler/LocalAI/core/services/routing/router"
 )
 
@@ -119,6 +121,36 @@ func RegisterMiddlewareRoutes(e *echo.Echo, app *application.Application) {
 			stats = reg.EmbeddingCacheStatsByRouter()
 		}
 		return c.JSON(http.StatusOK, map[string]any{"caches": stats})
+	})
+
+	// POST /api/router/decide — programmatic decision-oracle endpoint
+	// for external routers. Runs the same classifier that the in-band
+	// RouteModel middleware would have run and returns the chosen
+	// label set + candidate model, without rewriting the request,
+	// forwarding it, or recording a row in the decision store.
+	//
+	// Admin-only — same gating as /api/router/decisions. The risk
+	// surface is "runs classifier inference on arbitrary input", which
+	// matches the decision-log endpoint's gating.
+	decideHandler := localai.RouterDecideEndpoint(
+		app.ModelConfigLoader(),
+		app.ApplicationConfig(),
+		middleware.ClassifierDeps{
+			Scorer:      app.ScorerFactory(),
+			Embedder:    app.EmbedderFactory(),
+			VectorStore: app.VectorStoreFactory(),
+			Registry:    app.RouterClassifierRegistry(),
+		},
+	)
+	e.POST("/api/router/decide", func(c echo.Context) error {
+		viewer := resolveUsageUser(c, app)
+		if viewer == nil {
+			return c.JSON(http.StatusUnauthorized, map[string]string{"error": "not authenticated"})
+		}
+		if viewer.Role != auth.RoleAdmin {
+			return c.JSON(http.StatusForbidden, map[string]string{"error": "admin access required"})
+		}
+		return decideHandler(c)
 	})
 }
 

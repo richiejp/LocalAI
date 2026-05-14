@@ -118,7 +118,7 @@ func RouteModel(loader *config.ModelConfigLoader, appConfig *config.ApplicationC
 				return next(c)
 			}
 
-			classifier, classifierErr := getOrBuildClassifier(registry, cfg, deps)
+			classifier, classifierErr := GetOrBuildClassifier(registry, cfg, deps)
 			if classifierErr != nil {
 				xlog.Warn("router: classifier unavailable — falling back",
 					"router_model", cfg.Name, "classifier", cfg.Router.Classifier, "error", classifierErr)
@@ -139,7 +139,7 @@ func RouteModel(loader *config.ModelConfigLoader, appConfig *config.ApplicationC
 				return rewriteRequest(c, parsed, cfg, cfg.Router.Fallback, []string{router.LabelFallback}, router.Decision{Labels: []string{router.LabelFallback}, Latency: time.Since(start)}, classifier.Name(), store, fallbackUser, loader, appConfig, next)
 			}
 
-			candidate := matchCandidate(cfg.Router.Candidates, decision.Labels)
+			candidate := MatchCandidate(cfg.Router.Candidates, decision.Labels)
 			if candidate == "" {
 				xlog.Warn("router: no candidate covers active labels — using fallback",
 					"router_model", cfg.Name, "labels", decision.Labels)
@@ -216,7 +216,11 @@ func rewriteRequest(c echo.Context, parsed any, routerCfg *config.ModelConfig, c
 	return next(c)
 }
 
-func getOrBuildClassifier(registry *router.Registry, cfg *config.ModelConfig, deps ClassifierDeps) (router.Classifier, error) {
+// GetOrBuildClassifier looks up a built Classifier for the named router
+// model in the registry and builds it on miss. Exported so the
+// /api/router/decide decision-oracle endpoint can share the same
+// build-once cache that the in-band RouteModel middleware uses.
+func GetOrBuildClassifier(registry *router.Registry, cfg *config.ModelConfig, deps ClassifierDeps) (router.Classifier, error) {
 	fp := routerConfigFingerprint(cfg.Router)
 	if cached, ok := registry.Get(cfg.Name, fp); ok {
 		return cached, nil
@@ -346,13 +350,16 @@ func wrapWithEmbeddingCache(cfg *config.ModelConfig, inner router.Classifier, de
 	return router.NewEmbeddingCacheClassifier(inner, embedder, vstore, ec.SimilarityThreshold, ec.ConfidenceThreshold), nil
 }
 
-// matchCandidate picks the FIRST candidate whose Labels are a
+// MatchCandidate picks the FIRST candidate whose Labels are a
 // superset of the active label set. Admins order the candidates list
 // smallest → largest, so a request that needs one label routes to
 // the smallest capable model and one that needs multiple falls to
 // the first bigger candidate that covers them all. Returns empty
 // string when no candidate matches; the caller falls back.
-func matchCandidate(candidates []config.RouterCandidate, active []string) string {
+//
+// Exported so the /api/router/decide oracle endpoint can run the same
+// label-set → candidate-model resolution as the in-band middleware.
+func MatchCandidate(candidates []config.RouterCandidate, active []string) string {
 	if len(active) == 0 {
 		return ""
 	}
