@@ -198,9 +198,23 @@ An empty `fallback` causes the dispatch to fail with HTTP 500 rather
 than silently routing somewhere unintended — fail-fast, not
 silent-bypass.
 
+### Available classifiers
+
+LocalAI ships two classifier implementations. Pick one with `classifier:`
+in the router YAML:
+
+| Classifier | When to use | Underlying primitive |
+|---|---|---|
+| `score` (default) | Small classifier-tuned LM (Arch-Router-style). Best when label vocabulary is well-covered by next-token continuation. | `Score` gRPC primitive (llama-cpp, vLLM). |
+| `colbert` | When label descriptions are abstract or short and a next-token classifier produces flat distributions. Robust on long-form policy descriptions. | rerankers backend in ColBERT mode (e.g. `bge-m3-colbert` from the gallery). |
+
+Both classifiers share the same YAML shape: `classifier_model`,
+`policies`, `candidates`, `fallback`, `activation_threshold`,
+`classifier_cache_size`, and the optional `embedding_cache` block.
+
 ### The Score classifier
 
-The only classifier shipped today is `score`. It works like this:
+The `score` classifier works like this:
 
 1. Build a Qwen/ChatML system prompt that lists every policy label with
    its description and primes the model to emit a label as the assistant
@@ -238,6 +252,39 @@ ChatML instruct model works under those constraints, but expect flatter
 probability distributions which translate to a higher
 `activation_threshold` to keep noise out of the active label set.
 
+### The Colbert classifier
+
+The `colbert` classifier reranks each policy *description* against the
+prompt via the rerankers backend and activates the labels whose
+relevance scores clear `activation_threshold` (default 0.5 for
+reranker-style scores in [0, 1]).
+
+```yaml
+router:
+  classifier: colbert
+  classifier_model: bge-m3-colbert  # gallery entry; loads BAAI/bge-m3 in ColBERT mode
+  activation_threshold: 0.5
+  policies:
+    - label: code-generation
+      description: writing, debugging, reading, or explaining code
+    - label: casual-chat
+      description: small talk, greetings, jokes
+  candidates: [...]
+```
+
+The reranker scores the *description* (natural English) rather than
+asking a small LM to score the *label* as a next-token continuation,
+so it tends to be more robust when policy labels are abstract slugs
+(`compliance-review`, `tier-2-support`). The trade-off is one
+reranker round-trip per request — bge-m3 in ColBERT mode is fast
+enough on GPU that this is comparable to the Score path for most
+workloads. The `embedding_cache` block applies identically.
+
+The reranker model's `type:` (in the model YAML) selects which
+underlying scoring head loads — `colbert` for late-interaction MaxSim,
+`cross-encoder` for cross-attention scoring. The classifier itself is
+indifferent; pick the head that fits your latency / quality budget.
+
 ### YAML reference
 
 ```yaml
@@ -245,7 +292,8 @@ name: smart-router
 known_usecases:
   - chat
 router:
-  # The only classifier shipped today.
+  # `score` (Arch-Router-style next-token scoring) or `colbert`
+  # (rerank policy descriptions). See "Available classifiers" above.
   classifier: score
 
   # A model loaded by LocalAI that supports the Score gRPC primitive
