@@ -4,9 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
-	"sort"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -66,12 +64,7 @@ type ScoreClassifier struct {
 	// align with the scorer's input/output ordering.
 	labelOrder []string
 
-	// cache stores label-set-by-(normalised prompt) to skip the
-	// scoring round-trip on repeat queries. Keys are comma-joined
-	// label sets sorted lexicographically for deterministic equality.
-	mu       sync.RWMutex
-	cache    map[string][]string
-	cacheCap int
+	cache *labelSetCache
 }
 
 // NewScoreClassifier panics on caller errors at construction (empty
@@ -97,9 +90,6 @@ func NewScoreClassifier(policies []ScorePolicy, scorer Scorer, cacheCap int, act
 	for _, p := range policies {
 		labels = append(labels, p.Label)
 	}
-	if cacheCap < 0 {
-		cacheCap = 0
-	}
 	if activationThreshold <= 0 {
 		activationThreshold = defaultActivationThreshold
 	}
@@ -109,8 +99,7 @@ func NewScoreClassifier(policies []ScorePolicy, scorer Scorer, cacheCap int, act
 		activationThreshold: activationThreshold,
 		systemPrompt:        buildScoreSystemPrompt(policies),
 		labelOrder:          labels,
-		cache:               make(map[string][]string, cacheCap),
-		cacheCap:            cacheCap,
+		cache:               newLabelSetCache(cacheCap),
 	}
 }
 
@@ -118,7 +107,7 @@ func (c *ScoreClassifier) Name() string { return ClassifierScore }
 
 func (c *ScoreClassifier) Classify(ctx context.Context, p Probe) (Decision, error) {
 	start := time.Now()
-	if hit, ok := c.lookupCache(p.Prompt); ok {
+	if hit, ok := c.cache.lookup(p.Prompt); ok {
 		return Decision{Labels: hit, Score: 1.0, Latency: time.Since(start)}, nil
 	}
 	prompt := buildScorePrompt(c.systemPrompt, p.Prompt)
@@ -175,7 +164,7 @@ func (c *ScoreClassifier) Classify(ctx context.Context, p Probe) (Decision, erro
 		}
 		active = []string{c.labelOrder[bestIdx]}
 	}
-	c.storeCache(p.Prompt, active)
+	c.cache.put(p.Prompt, active)
 	return Decision{
 		Labels:  active,
 		Score:   topProb,
@@ -225,50 +214,8 @@ func softmax(logProbs []float64) []float64 {
 	return out
 }
 
-// cacheKey collapses incidental whitespace and casing so prompts like
-// "hello", " hello ", and "Hello" share an entry — agent loops often
-// produce minor variations that would otherwise miss.
-func cacheKey(prompt string) string {
-	return strings.ToLower(strings.TrimSpace(prompt))
-}
-
-func (c *ScoreClassifier) lookupCache(prompt string) ([]string, bool) {
-	if c.cacheCap == 0 {
-		return nil, false
-	}
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	v, ok := c.cache[cacheKey(prompt)]
-	return v, ok
-}
-
-func (c *ScoreClassifier) storeCache(prompt string, labels []string) {
-	if c.cacheCap == 0 {
-		return
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if len(c.cache) >= c.cacheCap {
-		for k := range c.cache {
-			delete(c.cache, k)
-			break
-		}
-	}
-	// Defensive copy + sort: cached label sets must be stable so
-	// callers can't mutate the cached value via aliasing, and
-	// comparing sets in tests doesn't depend on insertion order.
-	cp := make([]string, len(labels))
-	copy(cp, labels)
-	sort.Strings(cp)
-	c.cache[cacheKey(prompt)] = cp
-}
-
 // CacheLen returns the number of cached prompts. Test-only API.
-func (c *ScoreClassifier) CacheLen() int {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return len(c.cache)
-}
+func (c *ScoreClassifier) CacheLen() int { return c.cache.count() }
 
 func buildScoreSystemPrompt(policies []ScorePolicy) string {
 	var b strings.Builder
