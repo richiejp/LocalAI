@@ -67,13 +67,21 @@ type Classifier interface {
 // classifier: field, the buildClassifier dispatch in the
 // middleware, and the strings each Classifier returns from Name().
 const (
-	// ClassifierScore is the only shipped classifier. It picks
-	// labels by asking the classifier model to score each policy
-	// label as a continuation of the routing prompt. Used with
-	// Arch-Router-style small router models (Qwen-2.5-1.5B-Instruct
-	// base, trained on policy-continuation). See router/score.go
-	// for the full rationale.
+	// ClassifierScore picks labels by asking a small classifier
+	// model (Arch-Router-style) to score each policy label as a
+	// continuation of the routing prompt. See router/score.go for
+	// the full rationale.
 	ClassifierScore = "score"
+
+	// ClassifierColbert picks labels by reranking each policy's
+	// description against the prompt via LocalAI's rerankers
+	// backend. Robust when policy labels are abstract relative to
+	// user prompts — the description is the natural English the
+	// reranker was trained on. The classifier_model points to a
+	// reranker model (cross-encoder or bge-m3-colbert); the
+	// `type:` field on that model's YAML controls which Reranker
+	// library mode loads. See router/rerank.go.
+	ClassifierColbert = "colbert"
 )
 
 // LabelFallback is the synthetic label written to the decision
