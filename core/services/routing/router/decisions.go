@@ -23,8 +23,21 @@ type DecisionRecord struct {
 	LatencyMs     int64         `json:"latency_ms"`
 	Cached        bool          `json:"cached"`         // True when the decision came from the L2 embedding cache.
 	CacheSimilarity float64     `json:"cache_similarity,omitempty"` // Cosine similarity of the cache hit, 0 when not cached.
+	// Source groups decisions by the entry point that produced them so
+	// the admin page can split realtime / chat / anthropic streams. Empty
+	// string is treated as "chat" for backward compatibility with rows
+	// written before the field existed.
+	Source        string        `json:"source,omitempty"`
 	CreatedAt     time.Time     `json:"created_at"`
 }
+
+// Source values for DecisionRecord.Source. Kept as constants so callers
+// don't drift on capitalisation.
+const (
+	SourceChat      = "chat"
+	SourceAnthropic = "anthropic"
+	SourceRealtime  = "realtime"
+)
 
 // DecisionStore persists routing decisions for the admin page and
 // future drift checks. In-process by default so a no-auth box still
@@ -42,6 +55,7 @@ type DecisionListQuery struct {
 	CorrelationID string
 	UserID        string
 	RouterModel   string
+	Source        string
 	Limit         int
 }
 
@@ -99,6 +113,17 @@ func (s *memoryDecisionStore) List(_ context.Context, q DecisionListQuery) ([]De
 		}
 		if q.RouterModel != "" && r.RouterModel != q.RouterModel {
 			return false
+		}
+		if q.Source != "" {
+			// Empty source on the row is treated as SourceChat for back-
+			// compat with rows written before the field existed.
+			rowSource := r.Source
+			if rowSource == "" {
+				rowSource = SourceChat
+			}
+			if rowSource != q.Source {
+				return false
+			}
 		}
 		out = append(out, r)
 		return len(out) >= limit

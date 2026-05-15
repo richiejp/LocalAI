@@ -11,6 +11,7 @@ import (
 	"github.com/mudler/LocalAI/core/schema"
 	"github.com/mudler/LocalAI/core/services/routing/pii"
 	"github.com/mudler/LocalAI/core/services/routing/piiadapter"
+	"github.com/mudler/LocalAI/core/services/routing/router"
 )
 
 func RegisterOpenAIRoutes(app *echo.Echo,
@@ -60,6 +61,7 @@ func RegisterOpenAIRoutes(app *echo.Echo,
 			application.RouterDecisions(),
 			application.FallbackUser(),
 			middleware.OpenAIProbe,
+			router.SourceChat,
 			middleware.ClassifierDeps{
 				Scorer:      application.ScorerFactory(),
 				Embedder:    application.EmbedderFactory(),

@@ -248,7 +248,7 @@ func openAIChat(content string) *schema.OpenAIRequest {
 }
 
 func runRouter(loader *config.ModelConfigLoader, appConfig *config.ApplicationConfig, store router.DecisionStore, routerCfg *config.ModelConfig, parsed any, scorerFactory ScorerFactory) (*httptest.ResponseRecorder, error) {
-	mw := RouteModel(loader, appConfig, store, nil, OpenAIProbe, ClassifierDeps{Scorer: scorerFactory})
+	mw := RouteModel(loader, appConfig, store, nil, OpenAIProbe, router.SourceChat, ClassifierDeps{Scorer: scorerFactory})
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader("{}"))
 	rec := httptest.NewRecorder()
 	c := echo.New().NewContext(req, rec)

@@ -82,7 +82,7 @@ func RouterDecideEndpoint(loader *config.ModelConfigLoader, appConfig *config.Ap
 			return echo.NewHTTPError(http.StatusInternalServerError, "classify failed: "+err.Error())
 		}
 
-		candidate := middleware.MatchCandidate(cfg.Router.Candidates, decision.Labels)
+		candidate := router.MatchCandidate(cfg.Router.Candidates, decision.Labels)
 		fallback := false
 		if candidate == "" && cfg.Router.Fallback != "" {
 			candidate = cfg.Router.Fallback

@@ -15,6 +15,7 @@ import (
 	"github.com/mudler/LocalAI/core/schema"
 	"github.com/mudler/LocalAI/core/services/routing/pii"
 	"github.com/mudler/LocalAI/core/services/routing/piiadapter"
+	"github.com/mudler/LocalAI/core/services/routing/router"
 	"github.com/mudler/xlog"
 )
 
@@ -53,6 +54,7 @@ func RegisterAnthropicRoutes(app *echo.Echo,
 			application.RouterDecisions(),
 			application.FallbackUser(),
 			middleware.AnthropicProbe,
+			router.SourceAnthropic,
 			middleware.ClassifierDeps{
 				Scorer:      application.ScorerFactory(),
 				Embedder:    application.EmbedderFactory(),

@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"hash/fnv"
-	"slices"
 	"strings"
 	"time"
 
@@ -103,10 +102,18 @@ type ProbeExtractor func(parsed any) (router.Probe, bool)
 // Composition with SmartRouter (distributed mode): this middleware
 // only does *model* selection. Node selection still happens in
 // SmartRouter.Route() downstream of this middleware.
-func RouteModel(loader *config.ModelConfigLoader, appConfig *config.ApplicationConfig, store router.DecisionStore, fallbackUser *auth.User, extractor ProbeExtractor, deps ClassifierDeps) echo.MiddlewareFunc {
+// RouteModel wires the router middleware. source is the value written to
+// DecisionRecord.Source (router.SourceChat / SourceAnthropic / ...) so
+// the admin page can split decisions by entry point. Pass
+// router.SourceChat for the OpenAI chat endpoint, router.SourceAnthropic
+// for the Anthropic messages endpoint.
+func RouteModel(loader *config.ModelConfigLoader, appConfig *config.ApplicationConfig, store router.DecisionStore, fallbackUser *auth.User, extractor ProbeExtractor, source string, deps ClassifierDeps) echo.MiddlewareFunc {
 	registry := deps.Registry
 	if registry == nil {
 		registry = router.NewRegistry()
+	}
+	candidateLoader := func(name string) (*config.ModelConfig, error) {
+		return loader.LoadModelConfigFileByNameDefaultOptions(name, appConfig)
 	}
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
@@ -129,99 +136,78 @@ func RouteModel(loader *config.ModelConfigLoader, appConfig *config.ApplicationC
 			if classifierErr != nil {
 				xlog.Warn("router: classifier unavailable — falling back",
 					"router_model", cfg.Name, "classifier", cfg.Router.Classifier, "error", classifierErr)
-				if cfg.Router.Fallback == "" {
+				// classifier == nil pushes Resolve straight to the
+				// fallback path; if no fallback is configured Resolve
+				// returns a terminal error that we surface as 503.
+				classifier = nil
+			}
+
+			result, err := router.Resolve(c.Request().Context(), cfg, classifier, candidateLoader, probe)
+			if err != nil {
+				xlog.Warn("router: resolve failed", "router_model", cfg.Name, "error", err)
+				// classifier-unavailable + no-fallback maps to 503;
+				// candidate-not-loadable + depth-1 violations map to
+				// 500. Resolve embeds enough context in the error to
+				// tell them apart by string match, but the historical
+				// behaviour returned 503 only for the classifier-side
+				// failures — preserve that.
+				if classifierErr != nil {
 					return echo.NewHTTPError(503, "router classifier unavailable and no fallback configured")
 				}
-				return rewriteRequest(c, parsed, cfg, cfg.Router.Fallback, []string{router.LabelFallback}, router.Decision{Labels: []string{router.LabelFallback}}, router.LabelFallback, store, fallbackUser, loader, appConfig, next)
+				return echo.NewHTTPError(500, err.Error())
 			}
 
-			start := time.Now()
-			decision, err := classifier.Classify(c.Request().Context(), probe)
-			if err != nil {
-				xlog.Warn("router: classifier returned error — using fallback",
-					"router_model", cfg.Name, "error", err, "latency_ms", time.Since(start).Milliseconds())
-				if cfg.Router.Fallback == "" {
-					return echo.NewHTTPError(503, "router classification failed: "+err.Error())
-				}
-				return rewriteRequest(c, parsed, cfg, cfg.Router.Fallback, []string{router.LabelFallback}, router.Decision{Labels: []string{router.LabelFallback}, Latency: time.Since(start)}, classifier.Name(), store, fallbackUser, loader, appConfig, next)
+			if req, ok := parsed.(schema.LocalAIRequest); ok {
+				chosen := result.ChosenModel
+				req.ModelName(&chosen)
 			}
 
-			candidate := MatchCandidate(cfg.Router.Candidates, decision.Labels)
-			if candidate == "" {
-				xlog.Warn("router: no candidate covers active labels — using fallback",
-					"router_model", cfg.Name, "labels", decision.Labels)
-				if cfg.Router.Fallback == "" {
-					return echo.NewHTTPError(500, "no candidate covers active labels: "+strings.Join(decision.Labels, ","))
-				}
-				candidate = cfg.Router.Fallback
-			}
+			c.Set(CONTEXT_LOCALS_KEY_MODEL_CONFIG, result.ChosenConfig)
+			c.Set(ContextKeyRequestedModel, result.RouterModel)
+			c.Set(ContextKeyServedModel, result.ChosenModel)
 
-			return rewriteRequest(c, parsed, cfg, candidate, decision.Labels, decision, classifier.Name(), store, fallbackUser, loader, appConfig, next)
+			if store != nil {
+				recordHTTPDecision(c, store, result, fallbackUser, source)
+			}
+			return next(c)
 		}
 	}
 }
 
-// rewriteRequest swaps the resolved model from the router to the
-// chosen candidate, asserts the depth-1 invariant on the new config,
-// records the decision, and continues. Pulled out so the classifier-
-// success and fallback paths share one rewrite implementation.
-func rewriteRequest(c echo.Context, parsed any, routerCfg *config.ModelConfig, candidateModel string, labels []string, decision router.Decision, classifierName string, store router.DecisionStore, fallbackUser *auth.User, loader *config.ModelConfigLoader, appConfig *config.ApplicationConfig, next echo.HandlerFunc) error {
-	candidateCfg, err := loader.LoadModelConfigFileByNameDefaultOptions(candidateModel, appConfig)
-	if err != nil || candidateCfg == nil {
-		xlog.Error("router: failed to load candidate config",
-			"router_model", routerCfg.Name, "candidate", candidateModel, "error", err)
-		return echo.NewHTTPError(500, "router candidate not loadable: "+candidateModel)
+// recordHTTPDecision writes the resolved decision to the store with
+// HTTP-shaped audit metadata (correlation id from header, user from
+// auth middleware, fallback to the synthetic local user). Realtime
+// has its own recorder that supplies session-derived metadata
+// instead.
+func recordHTTPDecision(c echo.Context, store router.DecisionStore, result *router.ResolveResult, fallbackUser *auth.User, source string) {
+	correlationID, _ := c.Get(ContextKeyCorrelationID).(string)
+	if correlationID == "" {
+		correlationID = c.Response().Header().Get("X-Correlation-ID")
 	}
-
-	// Depth-1 invariant: the resolved candidate must NOT itself be a
-	// router. Chained routers turn dispatch into a graph traversal —
-	// a configuration we deliberately reject. The check is at runtime
-	// because gallery installs can introduce a Router on a previously-
-	// flat model after startup.
-	if candidateCfg.HasRouter() {
-		xlog.Error("router: depth-1 invariant violated — candidate is itself a router",
-			"router_model", routerCfg.Name, "candidate", candidateModel)
-		return echo.NewHTTPError(500, "router candidate is itself a router (depth-1 invariant)")
+	userID := ""
+	if u := auth.GetUser(c); u != nil {
+		userID = u.ID
+	} else if fallbackUser != nil {
+		userID = fallbackUser.ID
 	}
-
-	if req, ok := parsed.(schema.LocalAIRequest); ok {
-		req.ModelName(&candidateModel)
-	}
-
-	c.Set(CONTEXT_LOCALS_KEY_MODEL_CONFIG, candidateCfg)
-	c.Set(ContextKeyRequestedModel, routerCfg.Name)
-	c.Set(ContextKeyServedModel, candidateModel)
-
-	if store != nil {
-		correlationID, _ := c.Get(ContextKeyCorrelationID).(string)
-		if correlationID == "" {
-			correlationID = c.Response().Header().Get("X-Correlation-ID")
-		}
-		userID := ""
-		if u := auth.GetUser(c); u != nil {
-			userID = u.ID
-		} else if fallbackUser != nil {
-			userID = fallbackUser.ID
-		}
-		_ = store.Record(context.Background(), router.DecisionRecord{
-			ID:              newDecisionID(),
-			CorrelationID:   correlationID,
-			UserID:          userID,
-			RouterModel:     routerCfg.Name,
-			RequestedModel:  routerCfg.Name,
-			ServedModel:     candidateModel,
-			Classifier:      classifierName,
-			Label:           strings.Join(labels, ","),
-			Score:           decision.Score,
-			LatencyMs:       decision.Latency.Milliseconds(),
-			Cached:          decision.Cached,
-			CacheSimilarity: decision.CacheSimilarity,
-			CreatedAt:       time.Now().UTC(),
-		})
-	}
-
-	return next(c)
+	_ = store.Record(context.Background(), router.DecisionRecord{
+		ID:              newDecisionID(),
+		CorrelationID:   correlationID,
+		UserID:          userID,
+		RouterModel:     result.RouterModel,
+		RequestedModel:  result.RouterModel,
+		ServedModel:     result.ChosenModel,
+		Classifier:      result.ClassifierName,
+		Label:           strings.Join(result.Labels, ","),
+		Score:           result.Decision.Score,
+		LatencyMs:       result.Decision.Latency.Milliseconds(),
+		Cached:          result.Decision.Cached,
+		CacheSimilarity: result.Decision.CacheSimilarity,
+		Source:          source,
+		CreatedAt:       time.Now().UTC(),
+	})
 }
+
 
 // GetOrBuildClassifier looks up a built Classifier for the named router
 // model in the registry and builds it on miss. Exported so the
@@ -377,39 +363,6 @@ func wrapWithEmbeddingCache(cfg *config.ModelConfig, inner router.Classifier, de
 	return router.NewEmbeddingCacheClassifier(inner, embedder, vstore, ec.SimilarityThreshold, ec.ConfidenceThreshold), nil
 }
 
-// MatchCandidate picks the FIRST candidate whose Labels are a
-// superset of the active label set. Admins order the candidates list
-// smallest → largest, so a request that needs one label routes to
-// the smallest capable model and one that needs multiple falls to
-// the first bigger candidate that covers them all. Returns empty
-// string when no candidate matches; the caller falls back.
-//
-// Exported so the /api/router/decide oracle endpoint can run the same
-// label-set → candidate-model resolution as the in-band middleware.
-func MatchCandidate(candidates []config.RouterCandidate, active []string) string {
-	if len(active) == 0 {
-		return ""
-	}
-	for _, c := range candidates {
-		if labelSetCovers(c.Labels, active) {
-			return c.Model
-		}
-	}
-	return ""
-}
-
-// labelSetCovers returns true when every element of needed appears
-// in have. Label sets are typically <10 entries so the linear scan
-// is fine.
-func labelSetCovers(have, needed []string) bool {
-	for _, n := range needed {
-		if !slices.Contains(have, n) {
-			return false
-		}
-	}
-	return true
-}
-
 func newDecisionID() string {
 	var b [12]byte
 	_, _ = rand.Read(b[:])
@@ -425,6 +378,17 @@ func OpenAIProbe(parsed any) (router.Probe, bool) {
 	req, ok := parsed.(*schema.OpenAIRequest)
 	if !ok || req == nil {
 		return router.Probe{}, false
+	}
+	return OpenAIProbeFromRequest(req), true
+}
+
+// OpenAIProbeFromRequest is the typed counterpart of OpenAIProbe — same
+// extraction logic, but takes the request struct directly. Realtime and
+// other non-HTTP callers use it to feed a probe to router.Resolve
+// without going through an echo.Context first.
+func OpenAIProbeFromRequest(req *schema.OpenAIRequest) router.Probe {
+	if req == nil {
+		return router.Probe{}
 	}
 	var b strings.Builder
 	for i := range req.Messages {
@@ -443,9 +407,7 @@ func OpenAIProbe(parsed any) (router.Probe, bool) {
 			}
 		}
 	}
-	return router.Probe{
-		Prompt: b.String(),
-	}, true
+	return router.Probe{Prompt: b.String()}
 }
 
 // AnthropicProbe is the AnthropicRequest analogue of OpenAIProbe.
