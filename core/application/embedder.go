@@ -9,6 +9,7 @@ import (
 	"github.com/mudler/LocalAI/core/config"
 	"github.com/mudler/LocalAI/core/services/routing/router"
 	"github.com/mudler/LocalAI/pkg/grpc"
+	"github.com/mudler/LocalAI/pkg/grpc/proto"
 	"github.com/mudler/LocalAI/pkg/model"
 	"github.com/mudler/LocalAI/pkg/store"
 )
@@ -65,6 +66,53 @@ func (m *modelScorer) Score(ctx context.Context, prompt string, candidates []str
 			LengthNormalizedLogProb: c.LengthNormalizedLogProb,
 			NumTokens:               c.NumTokens,
 		}
+	}
+	return out, nil
+}
+
+// RerankerFactory returns a router.Reranker bound to the named model,
+// or nil when the model is not loadable. The colbert classifier uses
+// this to rerank policy descriptions against the prompt — the
+// reranker model's `type:` (e.g. "colbert") selects the underlying
+// scoring algorithm in the rerankers backend.
+func (a *Application) RerankerFactory() func(modelName string) router.Reranker {
+	return func(modelName string) router.Reranker {
+		cfg := a.adapterConfig(modelName)
+		if cfg == nil {
+			return nil
+		}
+		return &modelReranker{
+			modelLoader: a.modelLoader,
+			modelConfig: cfg,
+			appConfig:   a.applicationConfig,
+		}
+	}
+}
+
+type modelReranker struct {
+	modelLoader *model.ModelLoader
+	modelConfig *config.ModelConfig
+	appConfig   *config.ApplicationConfig
+}
+
+func (r *modelReranker) Rerank(ctx context.Context, query string, documents []string) ([]router.RerankResult, error) {
+	req := &proto.RerankRequest{
+		Query:     query,
+		Documents: documents,
+		// TopN=0 → return scores for every document. The classifier
+		// needs every label scored; truncating top-N would silently
+		// zero out labels the reranker considered unlikely.
+	}
+	res, err := backend.Rerank(ctx, req, r.modelLoader, r.appConfig, *r.modelConfig)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]router.RerankResult, 0, len(res.GetResults()))
+	for _, dr := range res.GetResults() {
+		out = append(out, router.RerankResult{
+			Index:          int(dr.GetIndex()),
+			RelevanceScore: dr.GetRelevanceScore(),
+		})
 	}
 	return out, nil
 }

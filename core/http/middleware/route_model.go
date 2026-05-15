@@ -37,6 +37,12 @@ type EmbedderFactory func(modelName string) router.Embedder
 // other's hits.
 type VectorStoreFactory func(storeName string) router.VectorStore
 
+// RerankerFactory returns a router.Reranker bound to a named model.
+// Used by the colbert classifier to score policy descriptions against
+// the prompt via LocalAI's rerankers backend. Returning nil signals
+// "model not loadable" — buildClassifier reports a config error.
+type RerankerFactory func(modelName string) router.Reranker
+
 // ClassifierDeps bundles the backend factories the router middleware
 // needs to build a classifier and its optional L2 cache. Bundled into
 // one struct because RouteModel already takes many positional
@@ -52,6 +58,7 @@ type ClassifierDeps struct {
 	Scorer      ScorerFactory
 	Embedder    EmbedderFactory
 	VectorStore VectorStoreFactory
+	Reranker    RerankerFactory
 
 	// Registry is the shared classifier cache. Both the OpenAI and
 	// Anthropic routes pass the same registry so the admin stats
@@ -252,79 +259,99 @@ func routerConfigFingerprint(rc config.RouterConfig) uint64 {
 
 func buildClassifier(cfg *config.ModelConfig, deps ClassifierDeps) (router.Classifier, error) {
 	rc := cfg.Router
-	classifier := rc.Classifier
-	if classifier == "" {
-		classifier = router.ClassifierScore
+	name := rc.Classifier
+	if name == "" {
+		name = router.ClassifierScore
 	}
-	if classifier != router.ClassifierScore {
-		return nil, fmt.Errorf("router: unknown classifier %q (only %q is supported)", classifier, router.ClassifierScore)
+	policies, err := validateRouterPolicies(name, rc)
+	if err != nil {
+		return nil, err
 	}
+	cacheCap := rc.ClassifierCacheSize
+	if cacheCap == 0 {
+		cacheCap = 1024
+	}
+
+	var inner router.Classifier
+	switch name {
+	case router.ClassifierScore:
+		if deps.Scorer == nil {
+			return nil, fmt.Errorf("router classifier score unavailable: no scorer factory wired")
+		}
+		scorer := deps.Scorer(rc.ClassifierModel)
+		if scorer == nil {
+			return nil, fmt.Errorf("router classifier score: classifier_model %q not loadable", rc.ClassifierModel)
+		}
+		inner = router.NewScoreClassifier(policies, scorer, cacheCap, rc.ActivationThreshold)
+	case router.ClassifierColbert:
+		if deps.Reranker == nil {
+			return nil, fmt.Errorf("router classifier colbert unavailable: no reranker factory wired")
+		}
+		reranker := deps.Reranker(rc.ClassifierModel)
+		if reranker == nil {
+			return nil, fmt.Errorf("router classifier colbert: classifier_model %q not loadable", rc.ClassifierModel)
+		}
+		inner = router.NewRerankClassifier(policies, reranker, cacheCap, rc.ActivationThreshold)
+	default:
+		return nil, fmt.Errorf("router: unknown classifier %q (supported: %s)", name, strings.Join([]string{router.ClassifierScore, router.ClassifierColbert}, ", "))
+	}
+
+	if rc.EmbeddingCache == nil {
+		return inner, nil
+	}
+	wrapped, err := wrapWithEmbeddingCache(cfg, inner, deps)
+	if err != nil {
+		// Caching plumbing problems must not break routing — log,
+		// drop the cache layer, and return the uncached classifier.
+		// The admin UI surfaces the warning via the classifier-build
+		// error path used elsewhere.
+		xlog.Warn("router: embedding cache disabled",
+			"router_model", cfg.Name, "error", err)
+		return inner, nil
+	}
+	return wrapped, nil
+}
+
+// validateRouterPolicies checks the shared invariants both classifiers
+// rely on (non-empty policies, every candidate label declared as a
+// policy, every candidate has a model + at least one label) and
+// returns the parsed []ScorePolicy. Both Score and Rerank classifiers
+// take the same policy shape.
+func validateRouterPolicies(classifierName string, rc config.RouterConfig) ([]router.ScorePolicy, error) {
 	if rc.ClassifierModel == "" {
-		return nil, fmt.Errorf("router classifier score requires classifier_model")
-	}
-	if deps.Scorer == nil {
-		return nil, fmt.Errorf("router classifier score unavailable: no scorer factory wired")
-	}
-	scorer := deps.Scorer(rc.ClassifierModel)
-	if scorer == nil {
-		return nil, fmt.Errorf("router classifier score: classifier_model %q not loadable", rc.ClassifierModel)
+		return nil, fmt.Errorf("router classifier %s requires classifier_model", classifierName)
 	}
 	if len(rc.Policies) == 0 {
-		return nil, fmt.Errorf("router classifier score requires at least one policy")
+		return nil, fmt.Errorf("router classifier %s requires at least one policy", classifierName)
 	}
 	policies := make([]router.ScorePolicy, 0, len(rc.Policies))
 	for _, p := range rc.Policies {
 		if p.Label == "" {
-			return nil, fmt.Errorf("router classifier score: policy with empty label")
+			return nil, fmt.Errorf("router classifier %s: policy with empty label", classifierName)
 		}
 		if p.Description == "" {
-			return nil, fmt.Errorf("router classifier score: policy %q has no description", p.Label)
+			return nil, fmt.Errorf("router classifier %s: policy %q has no description", classifierName, p.Label)
 		}
-		policies = append(policies, router.ScorePolicy{
-			Label:       p.Label,
-			Description: p.Description,
-		})
+		policies = append(policies, router.ScorePolicy{Label: p.Label, Description: p.Description})
 	}
-	// Validate that every label referenced by a candidate is declared
-	// as a policy — otherwise the classifier would emit labels no
-	// candidate covers, and the routing always falls back.
 	policyLabels := make(map[string]struct{}, len(policies))
 	for _, p := range policies {
 		policyLabels[p.Label] = struct{}{}
 	}
 	for _, c := range rc.Candidates {
 		if c.Model == "" {
-			return nil, fmt.Errorf("router classifier score: candidate has empty model field")
+			return nil, fmt.Errorf("router classifier %s: candidate has empty model field", classifierName)
 		}
 		if len(c.Labels) == 0 {
-			return nil, fmt.Errorf("router classifier score: candidate %q has no labels", c.Model)
+			return nil, fmt.Errorf("router classifier %s: candidate %q has no labels", classifierName, c.Model)
 		}
 		for _, l := range c.Labels {
 			if _, ok := policyLabels[l]; !ok {
-				return nil, fmt.Errorf("router classifier score: candidate %q references unknown label %q (not in policies)", c.Model, l)
+				return nil, fmt.Errorf("router classifier %s: candidate %q references unknown label %q (not in policies)", classifierName, c.Model, l)
 			}
 		}
 	}
-	cacheCap := rc.ClassifierCacheSize
-	if cacheCap == 0 {
-		cacheCap = 1024
-	}
-	score := router.NewScoreClassifier(policies, scorer, cacheCap, rc.ActivationThreshold)
-
-	if rc.EmbeddingCache == nil {
-		return score, nil
-	}
-	wrapped, err := wrapWithEmbeddingCache(cfg, score, deps)
-	if err != nil {
-		// Caching plumbing problems must not break routing — log,
-		// drop the cache layer, and return the uncached score
-		// classifier. The admin UI surfaces the warning via the
-		// classifier-build error path used elsewhere.
-		xlog.Warn("router: embedding cache disabled",
-			"router_model", cfg.Name, "error", err)
-		return score, nil
-	}
-	return wrapped, nil
+	return policies, nil
 }
 
 func wrapWithEmbeddingCache(cfg *config.ModelConfig, inner router.Classifier, deps ClassifierDeps) (router.Classifier, error) {

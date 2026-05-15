@@ -139,6 +139,7 @@ func RegisterMiddlewareRoutes(e *echo.Echo, app *application.Application) {
 			Scorer:      app.ScorerFactory(),
 			Embedder:    app.EmbedderFactory(),
 			VectorStore: app.VectorStoreFactory(),
+			Reranker:    app.RerankerFactory(),
 			Registry:    app.RouterClassifierRegistry(),
 		},
 	)
