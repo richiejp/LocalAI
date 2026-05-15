@@ -52,7 +52,6 @@ const defaultActivationThreshold = 0.15
 // intents ("debug this code AND explain the math") to a candidate
 // that can serve both.
 type ScoreClassifier struct {
-	policies            []ScorePolicy
 	scorer              Scorer
 	activationThreshold float64
 
@@ -60,8 +59,9 @@ type ScoreClassifier struct {
 	// reused on every classification — only the user-turn body changes.
 	systemPrompt string
 
-	// labels stored in the order configured. Indices into policies[]
-	// align with the scorer's input/output ordering.
+	// labelOrder mirrors the configured policy ordering — the scorer
+	// receives candidates in this order and the softmax distribution
+	// indexes back into it.
 	labelOrder []string
 
 	cache *labelSetCache
@@ -94,7 +94,6 @@ func NewScoreClassifier(policies []ScorePolicy, scorer Scorer, cacheCap int, act
 		activationThreshold = defaultActivationThreshold
 	}
 	return &ScoreClassifier{
-		policies:            policies,
 		scorer:              scorer,
 		activationThreshold: activationThreshold,
 		systemPrompt:        buildScoreSystemPrompt(policies),
@@ -107,7 +106,8 @@ func (c *ScoreClassifier) Name() string { return ClassifierScore }
 
 func (c *ScoreClassifier) Classify(ctx context.Context, p Probe) (Decision, error) {
 	start := time.Now()
-	if hit, ok := c.cache.lookup(p.Prompt); ok {
+	key := cacheKey(p.Prompt)
+	if hit, ok := c.cache.get(key); ok {
 		return Decision{Labels: hit, Score: 1.0, Latency: time.Since(start)}, nil
 	}
 	prompt := buildScorePrompt(c.systemPrompt, p.Prompt)
@@ -119,10 +119,9 @@ func (c *ScoreClassifier) Classify(ctx context.Context, p Probe) (Decision, erro
 		return errDecision(start, fmt.Errorf("score classify: scorer returned %d results for %d policies", len(results), len(c.labelOrder)))
 	}
 
-	// Convert per-token log-probabilities into a probability
-	// distribution over labels via softmax. Length-normalisation
-	// makes labels of different token lengths comparable, then
-	// softmax converts to probabilities suitable for thresholding.
+	// Length-normalise log-probabilities (so candidates of unequal
+	// token length stay comparable) then softmax to probabilities
+	// suitable for thresholding.
 	logProbs := make([]float64, len(results))
 	for i, r := range results {
 		switch {
@@ -131,43 +130,16 @@ func (c *ScoreClassifier) Classify(ctx context.Context, p Probe) (Decision, erro
 		case r.LengthNormalizedLogProb != 0:
 			logProbs[i] = r.LengthNormalizedLogProb
 		default:
-			// Backend didn't populate the length-normalised field;
-			// derive it ourselves so candidates of unequal token
-			// length stay comparable.
 			logProbs[i] = r.LogProb / float64(r.NumTokens)
 		}
 	}
 	probs := softmax(logProbs)
 
-	// Threshold to active label set. Top probability is also kept
-	// for the decision-log "score" field so admins can see
-	// confidence even when multiple labels are active.
-	active := make([]string, 0, len(c.labelOrder))
-	topProb := 0.0
-	for i, prob := range probs {
-		if prob > topProb {
-			topProb = prob
-		}
-		if prob >= c.activationThreshold {
-			active = append(active, c.labelOrder[i])
-		}
-	}
-	// Defensive: if the distribution is so flat that nothing
-	// crosses threshold, fall back to the argmax so the caller
-	// always has something to route on.
-	if len(active) == 0 {
-		bestIdx := 0
-		for i := 1; i < len(probs); i++ {
-			if probs[i] > probs[bestIdx] {
-				bestIdx = i
-			}
-		}
-		active = []string{c.labelOrder[bestIdx]}
-	}
-	c.cache.put(p.Prompt, active)
+	active, bestIdx := selectActive(probs, c.labelOrder, c.activationThreshold)
+	c.cache.put(key, active)
 	return Decision{
 		Labels:  active,
-		Score:   topProb,
+		Score:   probs[bestIdx],
 		Latency: time.Since(start),
 	}, nil
 }
@@ -214,8 +186,7 @@ func softmax(logProbs []float64) []float64 {
 	return out
 }
 
-// CacheLen returns the number of cached prompts. Test-only API.
-func (c *ScoreClassifier) CacheLen() int { return c.cache.count() }
+func (c *ScoreClassifier) CacheLen() int { return c.cache.len() }
 
 func buildScoreSystemPrompt(policies []ScorePolicy) string {
 	var b strings.Builder
